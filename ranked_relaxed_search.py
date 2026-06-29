@@ -142,9 +142,21 @@ def rank_candidate(
     total_half = sum(half_counts)
     score += min(total_half, 26) * 12
     score += min(half_counts) * 22
+    score += min(analysis.horizontal_half_cell_count, analysis.vertical_half_cell_count) * 50
+    score -= abs(analysis.horizontal_half_cell_count - analysis.vertical_half_cell_count) * 20
+    if analysis.horizontal_half_cell_count == 0:
+        score -= 500
+    if analysis.vertical_half_cell_count == 0:
+        score -= 500
+    score += analysis.horizontal_half_cell_contacts * 40
+    score += analysis.vertical_half_cell_contacts * 40
+    if analysis.horizontal_half_cell_contacts == 0:
+        score -= 250
+    if analysis.vertical_half_cell_contacts == 0:
+        score -= 250
 
-    score -= (max(areas) - min(areas)) * 8
-    score -= sum(abs(area - 16) for area in areas) * 2
+    average_area = sum(areas) / max(1, len(areas))
+    score -= sum(abs(area - average_area) for area in areas) * 0.75
 
     if analysis.duplicate_piece_count:
         score -= analysis.duplicate_piece_count * 55
@@ -172,7 +184,11 @@ def rank_candidate(
         f"perimeter_extra={int(metrics['perimeter_extra'])} fill={metrics['fill']:.2f} "
         f"narrow_corridor={int(metrics['narrow_corridor'])}"
     )
-    notes.append(f"half cells total {total_half}")
+    notes.append(
+        f"half cells total {total_half} "
+        f"h={analysis.horizontal_half_cell_count} v={analysis.vertical_half_cell_count} "
+        f"contacts_h={analysis.horizontal_half_cell_contacts} contacts_v={analysis.vertical_half_cell_contacts}"
+    )
     notes.append(profile_name)
     return score, notes
 
@@ -224,6 +240,16 @@ def make_candidate(
     if analysis.fragile_artifact_count != 0:
         return None
     if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
+        return None
+    if any(len(piece) < args.min_piece_area or len(piece) > args.max_piece_area for piece in pieces):
+        return None
+    if analysis.horizontal_half_cell_count < getattr(args, "min_horizontal_half_cells", 0):
+        return None
+    if analysis.vertical_half_cell_count < getattr(args, "min_vertical_half_cells", 0):
+        return None
+    if analysis.horizontal_half_cell_contacts < getattr(args, "min_horizontal_half_contacts", 0):
+        return None
+    if analysis.vertical_half_cell_contacts < getattr(args, "min_vertical_half_contacts", 0):
         return None
 
     return base.Candidate(
@@ -566,10 +592,18 @@ def write_ranked_outputs(results: list[RankedResult], output_dir: Path, limit: i
                 "board_bbox": [metrics["bbox_w"], metrics["bbox_h"]],
                 "board_fill": metrics["fill"],
                 "board_extra_perimeter": metrics["perimeter_extra"],
+                "piece_areas_small": [len(piece) for piece in result.candidate.pieces],
+                "piece_areas_ordinary_equiv": [len(piece) / 4.0 for piece in result.candidate.pieces],
                 "solution_count_effective_fixed": result.candidate.solution_count,
                 "rotated_solution_count_raw": result.candidate.analysis.rotated_solution_count,
                 "half_cell_count_per_piece": result.candidate.analysis.half_cell_count_per_piece,
                 "total_half_cell_count": result.candidate.analysis.total_half_cell_count,
+                "horizontal_half_cell_count": result.candidate.analysis.horizontal_half_cell_count,
+                "vertical_half_cell_count": result.candidate.analysis.vertical_half_cell_count,
+                "horizontal_half_cell_count_per_piece": result.candidate.analysis.horizontal_half_cell_count_per_piece,
+                "vertical_half_cell_count_per_piece": result.candidate.analysis.vertical_half_cell_count_per_piece,
+                "horizontal_half_cell_contacts": result.candidate.analysis.horizontal_half_cell_contacts,
+                "vertical_half_cell_contacts": result.candidate.analysis.vertical_half_cell_contacts,
                 "quarter_artifact_count": result.candidate.analysis.quarter_artifact_count,
                 "fragile_artifact_count": result.candidate.analysis.fragile_artifact_count,
                 "duplicate_piece_count": result.candidate.analysis.duplicate_piece_count,
@@ -613,6 +647,10 @@ def add_random_fallback_results(
         allow_holes=args.allow_holes,
         allow_identical_pieces=args.allow_identical_pieces,
         min_half_cells=args.fallback_min_half_cells,
+        min_horizontal_half_cells=args.min_horizontal_half_cells,
+        min_vertical_half_cells=args.min_vertical_half_cells,
+        min_horizontal_half_contacts=args.min_horizontal_half_contacts,
+        min_vertical_half_contacts=args.min_vertical_half_contacts,
         solution_count_limit=args.solution_count_limit,
         verbose=args.verbose,
     )
@@ -654,6 +692,16 @@ def add_random_fallback_results(
             continue
         if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
             continue
+        if any(len(piece) < args.min_piece_area or len(piece) > args.max_piece_area for piece in candidate.pieces):
+            continue
+        if analysis.horizontal_half_cell_count < args.min_horizontal_half_cells:
+            continue
+        if analysis.vertical_half_cell_count < args.min_vertical_half_cells:
+            continue
+        if analysis.horizontal_half_cell_contacts < args.min_horizontal_half_contacts:
+            continue
+        if analysis.vertical_half_cell_contacts < args.min_vertical_half_contacts:
+            continue
 
         candidate.solutions = effective_solutions
         candidate.solution_count = len(effective_solutions)
@@ -674,8 +722,8 @@ def add_random_fallback_results(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="One-shot ranked ideal search.")
     parser.add_argument("--pieces", type=int, default=6)
-    parser.add_argument("--min-piece-area", type=int, default=14)
-    parser.add_argument("--max-piece-area", type=int, default=18)
+    parser.add_argument("--min-piece-area", type=int, default=12)
+    parser.add_argument("--max-piece-area", type=int, default=20)
     parser.add_argument("--target-solutions", type=int, default=4)
     parser.add_argument("--min-acceptable-solutions", type=int, default=2)
     parser.add_argument("--solution-count-limit", type=int, default=200)
@@ -689,6 +737,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--effort", choices=("fast", "balanced", "relaxed", "deep", "extreme"), default="balanced")
     parser.add_argument("--board-roughness", choices=BOARD_ROUGHNESS_CHOICES, default="balanced")
+    parser.add_argument("--min-horizontal-half-cells", type=int, default=2)
+    parser.add_argument("--min-vertical-half-cells", type=int, default=2)
+    parser.add_argument("--min-horizontal-half-contacts", type=int, default=1)
+    parser.add_argument("--min-vertical-half-contacts", type=int, default=1)
     parser.add_argument("--output-dir", type=Path, default=Path("out_ranked"))
     parser.add_argument("--keep-candidates", type=int, default=12)
     parser.add_argument("--keep-searching", action="store_true")

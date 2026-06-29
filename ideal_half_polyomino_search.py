@@ -54,6 +54,8 @@ class ShapeRecord:
     cells: frozenset[Cell]
     area: int
     half_count: int
+    horizontal_half_count: int
+    vertical_half_count: int
     fragile_count: int
     rotational_signature: tuple[Cell, ...]
 
@@ -417,6 +419,8 @@ def make_partition_shapes(
     min_area: int,
     max_area: int,
     min_half_cells: int,
+    min_horizontal_half_cells: int,
+    min_vertical_half_cells: int,
     max_fragile: int,
     transfer_attempts: int,
 ) -> list[set[Cell]] | None:
@@ -439,9 +443,8 @@ def make_partition_shapes(
             max(3, min_half_cells * len(regions) // 2),
             max(3, len(edges)),
         )
-        for c, d, p, q, direction in shuffled_edges:
-            if len(split_cells) >= split_budget:
-                break
+
+        def try_split(c: MacroCell, d: MacroCell, p: int, q: int, direction: str) -> bool:
             options = [(c, p, q, True), (d, q, p, False)]
             rng.shuffle(options)
             for cell, donor, receiver, positive in options:
@@ -457,9 +460,35 @@ def make_partition_shapes(
                 areas[donor] -= 2
                 areas[receiver] += 2
                 split_cells.add(cell)
+                return True
+            return False
+
+        required_directions = (
+            ["v"] * ((min_horizontal_half_cells + 1) // 2)
+            + ["h"] * ((min_vertical_half_cells + 1) // 2)
+        )
+        rng.shuffle(required_directions)
+        for required_direction in required_directions:
+            for c, d, p, q, direction in shuffled_edges:
+                if len(split_cells) >= split_budget:
+                    break
+                if direction != required_direction:
+                    continue
+                if try_split(c, d, p, q, direction):
+                    break
+
+        for c, d, p, q, direction in shuffled_edges:
+            if len(split_cells) >= split_budget:
                 break
+            try_split(c, d, p, q, direction)
 
         pieces = [align_cells(base.masks_to_cells(masks)) for masks in masks_by_piece]
+        orientation_counts = base.count_half_cell_orientations(pieces)
+        if (
+            orientation_counts["horizontal_half_cell_count"] < min_horizontal_half_cells
+            or orientation_counts["vertical_half_cell_count"] < min_vertical_half_cells
+        ):
+            continue
         for piece in pieces:
             if not validate_ideal_piece(piece, min_area, max_area, min_half_cells, max_fragile):
                 continue
@@ -522,6 +551,8 @@ def build_shape_library(args: argparse.Namespace, macro_board: set[MacroCell]) -
             min_area=args.min_piece_area,
             max_area=args.max_piece_area,
             min_half_cells=args.min_half_cells,
+            min_horizontal_half_cells=getattr(args, "min_horizontal_half_cells", 0),
+            min_vertical_half_cells=getattr(args, "min_vertical_half_cells", 0),
             max_fragile=args.max_fragile,
             transfer_attempts=args.transfer_attempts,
         )
@@ -544,6 +575,8 @@ def build_shape_library(args: argparse.Namespace, macro_board: set[MacroCell]) -
                     cells=cells,
                     area=len(cells),
                     half_count=base.count_half_cells(cells),
+                    horizontal_half_count=base.count_horizontal_half_cells(cells),
+                    vertical_half_count=base.count_vertical_half_cells(cells),
                     fragile_count=base.count_fragile_artifacts(cells),
                     rotational_signature=rot_sig,
                 )
@@ -569,6 +602,8 @@ def build_shape_library(args: argparse.Namespace, macro_board: set[MacroCell]) -
                         cells=record.cells,
                         area=record.area,
                         half_count=record.half_count,
+                        horizontal_half_count=record.horizontal_half_count,
+                        vertical_half_count=record.vertical_half_count,
                         fragile_count=record.fragile_count,
                         rotational_signature=record.rotational_signature,
                     )
@@ -750,6 +785,14 @@ def _build_cpsat_model(
 
     model.Add(sum(y.values()) == args.pieces)
     model.Add(sum(shape.area * y[shape.id] for shape in shapes) == len(board))
+    model.Add(
+        sum(shape.horizontal_half_count * y[shape.id] for shape in shapes)
+        >= getattr(args, "min_horizontal_half_cells", 0)
+    )
+    model.Add(
+        sum(shape.vertical_half_count * y[shape.id] for shape in shapes)
+        >= getattr(args, "min_vertical_half_cells", 0)
+    )
 
     # Usually we avoid selecting two shapes that are the same physical cut up to
     # rotation.  Ranked search may allow them, but downstream verification counts
@@ -790,6 +833,7 @@ def _build_cpsat_model(
     # Prefer more half-cell structure and cleaner pieces.
     model.Maximize(
         sum(shape.half_count * y[shape.id] for shape in shapes)
+        + sum(min(shape.horizontal_half_count, shape.vertical_half_count) * 3 * y[shape.id] for shape in shapes)
         - sum(shape.fragile_count * 20 * y[shape.id] for shape in shapes)
     )
     return model, y, x, {placement.id: placement for placement in placements}
@@ -974,6 +1018,8 @@ def write_library_snapshot(
                 "id": shape.id,
                 "area": shape.area,
                 "half_count": shape.half_count,
+                "horizontal_half_count": shape.horizontal_half_count,
+                "vertical_half_count": shape.vertical_half_count,
                 "fragile_count": shape.fragile_count,
                 "cells": sorted([list(cell) for cell in shape.cells]),
             }
@@ -993,9 +1039,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-board-candidates", type=int, default=20)
     parser.add_argument("--max-board-candidates-per-remove", type=int, default=5000)
     parser.add_argument("--allow-holes", action="store_true")
-    parser.add_argument("--min-piece-area", type=int, default=14)
-    parser.add_argument("--max-piece-area", type=int, default=18)
+    parser.add_argument("--min-piece-area", type=int, default=12)
+    parser.add_argument("--max-piece-area", type=int, default=20)
     parser.add_argument("--min-half-cells", type=int, default=3)
+    parser.add_argument("--min-horizontal-half-cells", type=int, default=2)
+    parser.add_argument("--min-vertical-half-cells", type=int, default=2)
     parser.add_argument("--max-fragile", type=int, default=0)
     parser.add_argument("--required-solutions", type=int, default=4)
     parser.add_argument("--max-solutions", type=int, default=16)
@@ -1036,6 +1084,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--required-solutions should be at least 2")
     if args.solution_count_limit < args.required_solutions:
         raise SystemExit("--solution-count-limit must be at least --required-solutions")
+    if args.min_horizontal_half_cells < 0 or args.min_vertical_half_cells < 0:
+        raise SystemExit("directional half-cell minimums must be non-negative")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -161,9 +161,21 @@ def rank_candidate(
     total_half = sum(half_counts)
     score += min(total_half, 26) * 12
     score += min(half_counts) * 22
+    score += min(analysis.horizontal_half_cell_count, analysis.vertical_half_cell_count) * 50
+    score -= abs(analysis.horizontal_half_cell_count - analysis.vertical_half_cell_count) * 20
+    if analysis.horizontal_half_cell_count == 0:
+        score -= 500
+    if analysis.vertical_half_cell_count == 0:
+        score -= 500
+    score += analysis.horizontal_half_cell_contacts * 40
+    score += analysis.vertical_half_cell_contacts * 40
+    if analysis.horizontal_half_cell_contacts == 0:
+        score -= 250
+    if analysis.vertical_half_cell_contacts == 0:
+        score -= 250
 
-    score -= (max(areas) - min(areas)) * 8
-    score -= sum(abs(area - 16) for area in areas) * 2
+    average_area = sum(areas) / max(1, len(areas))
+    score -= sum(abs(area - average_area) for area in areas) * 0.75
 
     if analysis.duplicate_piece_count:
         score -= analysis.duplicate_piece_count * 55
@@ -191,7 +203,11 @@ def rank_candidate(
         f"perimeter_extra={int(metrics['perimeter_extra'])} fill={metrics['fill']:.2f} "
         f"narrow_corridor={int(metrics['narrow_corridor'])}"
     )
-    notes.append(f"half cells total {total_half}")
+    notes.append(
+        f"half cells total {total_half} "
+        f"h={analysis.horizontal_half_cell_count} v={analysis.vertical_half_cell_count} "
+        f"contacts_h={analysis.horizontal_half_cell_contacts} contacts_v={analysis.vertical_half_cell_contacts}"
+    )
     notes.append(profile_name)
     return score, notes
 
@@ -260,6 +276,36 @@ def make_candidate(
         reject_reasons.append(f"fragile_artifact_count={analysis.fragile_artifact_count}")
     if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
         reject_reasons.append(f"duplicate_piece_count={analysis.duplicate_piece_count}")
+    piece_areas = [len(piece) for piece in pieces]
+    if any(area < args.min_piece_area or area > args.max_piece_area for area in piece_areas):
+        reject_reasons.append(
+            "piece_area_out_of_bounds "
+            f"areas={piece_areas} min={args.min_piece_area} max={args.max_piece_area}"
+        )
+    min_horizontal = getattr(args, "min_horizontal_half_cells", 0)
+    min_vertical = getattr(args, "min_vertical_half_cells", 0)
+    min_horizontal_contacts = getattr(args, "min_horizontal_half_contacts", 0)
+    min_vertical_contacts = getattr(args, "min_vertical_half_contacts", 0)
+    if analysis.horizontal_half_cell_count < min_horizontal:
+        reject_reasons.append(
+            "not_enough_horizontal_half_cells "
+            f"horizontal={analysis.horizontal_half_cell_count} min={min_horizontal}"
+        )
+    if analysis.vertical_half_cell_count < min_vertical:
+        reject_reasons.append(
+            "not_enough_vertical_half_cells "
+            f"vertical={analysis.vertical_half_cell_count} min={min_vertical}"
+        )
+    if analysis.horizontal_half_cell_contacts < min_horizontal_contacts:
+        reject_reasons.append(
+            "not_enough_horizontal_half_contacts "
+            f"horizontal_contacts={analysis.horizontal_half_cell_contacts} min={min_horizontal_contacts}"
+        )
+    if analysis.vertical_half_cell_contacts < min_vertical_contacts:
+        reject_reasons.append(
+            "not_enough_vertical_half_contacts "
+            f"vertical_contacts={analysis.vertical_half_cell_contacts} min={min_vertical_contacts}"
+        )
 
     near_miss = NearMiss(
         candidate=candidate,
@@ -297,6 +343,10 @@ def should_store_near_miss(miss: NearMiss, args: argparse.Namespace) -> bool:
     if miss.candidate.analysis.fragile_artifact_count == 1:
         return True
     if "duplicate_piece_count" in miss.reject_reason:
+        return True
+    if "not_enough_horizontal_half" in miss.reject_reason:
+        return True
+    if "not_enough_vertical_half" in miss.reject_reason:
         return True
     if miss.board_metrics["fill"] >= 0.88 and miss.effective_solution_count < min_solutions:
         return True
@@ -648,10 +698,18 @@ def write_ranked_outputs(results: list[RankedResult], output_dir: Path, limit: i
                 "board_bbox": [metrics["bbox_w"], metrics["bbox_h"]],
                 "board_fill": metrics["fill"],
                 "board_extra_perimeter": metrics["perimeter_extra"],
+                "piece_areas_small": [len(piece) for piece in result.candidate.pieces],
+                "piece_areas_ordinary_equiv": [len(piece) / 4.0 for piece in result.candidate.pieces],
                 "solution_count_effective_fixed": result.candidate.solution_count,
                 "rotated_solution_count_raw": result.candidate.analysis.rotated_solution_count,
                 "half_cell_count_per_piece": result.candidate.analysis.half_cell_count_per_piece,
                 "total_half_cell_count": result.candidate.analysis.total_half_cell_count,
+                "horizontal_half_cell_count": result.candidate.analysis.horizontal_half_cell_count,
+                "vertical_half_cell_count": result.candidate.analysis.vertical_half_cell_count,
+                "horizontal_half_cell_count_per_piece": result.candidate.analysis.horizontal_half_cell_count_per_piece,
+                "vertical_half_cell_count_per_piece": result.candidate.analysis.vertical_half_cell_count_per_piece,
+                "horizontal_half_cell_contacts": result.candidate.analysis.horizontal_half_cell_contacts,
+                "vertical_half_cell_contacts": result.candidate.analysis.vertical_half_cell_contacts,
                 "quarter_artifact_count": result.candidate.analysis.quarter_artifact_count,
                 "fragile_artifact_count": result.candidate.analysis.fragile_artifact_count,
                 "duplicate_piece_count": result.candidate.analysis.duplicate_piece_count,
@@ -677,6 +735,14 @@ def near_miss_to_json(miss: NearMiss, rank: int) -> dict[str, object]:
         "quarter_artifact_count": analysis.quarter_artifact_count,
         "fragile_artifact_count": analysis.fragile_artifact_count,
         "duplicate_piece_count": analysis.duplicate_piece_count,
+        "horizontal_half_cell_count": analysis.horizontal_half_cell_count,
+        "vertical_half_cell_count": analysis.vertical_half_cell_count,
+        "horizontal_half_cell_count_per_piece": analysis.horizontal_half_cell_count_per_piece,
+        "vertical_half_cell_count_per_piece": analysis.vertical_half_cell_count_per_piece,
+        "horizontal_half_cell_contacts": analysis.horizontal_half_cell_contacts,
+        "vertical_half_cell_contacts": analysis.vertical_half_cell_contacts,
+        "piece_areas_small": [len(piece) for piece in miss.candidate.pieces],
+        "piece_areas_ordinary_equiv": [len(piece) / 4.0 for piece in miss.candidate.pieces],
         "board_metrics": miss.board_metrics,
         "profile_name": miss.profile_name,
         "board_index": miss.board_index,
@@ -716,6 +782,14 @@ def write_near_miss_html(near_misses: list[NearMiss], path: Path) -> None:
                 <span>fragile {candidate.analysis.fragile_artifact_count}</span>
                 <span>quarter {candidate.analysis.quarter_artifact_count}</span>
                 <span>duplicate {candidate.analysis.duplicate_piece_count}</span>
+                <span>h half {candidate.analysis.horizontal_half_cell_count}</span>
+                <span>v half {candidate.analysis.vertical_half_cell_count}</span>
+                <span>h per piece {escape(','.join(str(v) for v in candidate.analysis.horizontal_half_cell_count_per_piece))}</span>
+                <span>v per piece {escape(','.join(str(v) for v in candidate.analysis.vertical_half_cell_count_per_piece))}</span>
+                <span>h contact {candidate.analysis.horizontal_half_cell_contacts}</span>
+                <span>v contact {candidate.analysis.vertical_half_cell_contacts}</span>
+                <span>areas small {escape(','.join(str(len(piece)) for piece in candidate.pieces))}</span>
+                <span>areas ordinary {escape(','.join(f'{len(piece) / 4.0:.1f}' for piece in candidate.pieces))}</span>
                 <span>fill {metrics['fill']:.2f}</span>
                 <span>perimeter+ {metrics['perimeter_extra']:.0f}</span>
               </div>
@@ -814,6 +888,10 @@ def add_random_fallback_results(
         allow_holes=args.allow_holes,
         allow_identical_pieces=args.allow_identical_pieces,
         min_half_cells=args.fallback_min_half_cells,
+        min_horizontal_half_cells=args.min_horizontal_half_cells,
+        min_vertical_half_cells=args.min_vertical_half_cells,
+        min_horizontal_half_contacts=args.min_horizontal_half_contacts,
+        min_vertical_half_contacts=args.min_vertical_half_contacts,
         solution_count_limit=args.solution_count_limit,
         verbose=args.verbose,
     )
@@ -855,6 +933,16 @@ def add_random_fallback_results(
             continue
         if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
             continue
+        if any(len(piece) < args.min_piece_area or len(piece) > args.max_piece_area for piece in candidate.pieces):
+            continue
+        if analysis.horizontal_half_cell_count < args.min_horizontal_half_cells:
+            continue
+        if analysis.vertical_half_cell_count < args.min_vertical_half_cells:
+            continue
+        if analysis.horizontal_half_cell_contacts < args.min_horizontal_half_contacts:
+            continue
+        if analysis.vertical_half_cell_contacts < args.min_vertical_half_contacts:
+            continue
 
         candidate.solutions = effective_solutions
         candidate.solution_count = len(effective_solutions)
@@ -875,8 +963,8 @@ def add_random_fallback_results(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="One-shot ranked ideal search.")
     parser.add_argument("--pieces", type=int, default=6)
-    parser.add_argument("--min-piece-area", type=int, default=14)
-    parser.add_argument("--max-piece-area", type=int, default=18)
+    parser.add_argument("--min-piece-area", type=int, default=12)
+    parser.add_argument("--max-piece-area", type=int, default=20)
     parser.add_argument("--target-solutions", type=int, default=4)
     parser.add_argument("--min-acceptable-solutions", type=int, default=2)
     parser.add_argument("--solution-count-limit", type=int, default=200)
@@ -890,6 +978,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--effort", choices=("relaxed", "fast", "balanced", "deep", "extreme"), default="relaxed")
     parser.add_argument("--board-roughness", choices=BOARD_ROUGHNESS_CHOICES, default="balanced")
+    parser.add_argument("--min-horizontal-half-cells", type=int, default=2)
+    parser.add_argument("--min-vertical-half-cells", type=int, default=2)
+    parser.add_argument("--min-horizontal-half-contacts", type=int, default=1)
+    parser.add_argument("--min-vertical-half-contacts", type=int, default=1)
     parser.add_argument("--output-dir", type=Path, default=Path("out_ranked"))
     parser.add_argument("--keep-candidates", type=int, default=12)
     parser.add_argument("--keep-searching", action="store_true")

@@ -1,0 +1,375 @@
+[
+  {
+    "rank": 1,
+    "score": -42.400000000000006,
+    "profile": "6x5_remove6-8_half1_sol2",
+    "board_index": 3,
+    "board_macro_area": 24,
+    "board_bbox": [
+      5,
+      5
+    ],
+    "board_fill": 0.96,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      3,
+      4,
+      1,
+      3,
+      2,
+      3
+    ],
+    "total_half_cell_count": 16,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 0,
+    "notes": [
+      "too few fixed solutions",
+      "board 6x5 remove=6 roughness=rough perimeter_extra=0 fill=0.96 narrow_corridor=0",
+      "half cells total 16",
+      "6x5_remove6-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 2,
+    "score": -76.33333333333334,
+    "profile": "5x6_remove5-8_half1_sol2",
+    "board_index": 1,
+    "board_macro_area": 25,
+    "board_bbox": [
+      5,
+      5
+    ],
+    "board_fill": 1.0,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      2,
+      2,
+      3,
+      3,
+      2,
+      2
+    ],
+    "total_half_cell_count": 14,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 1,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 1",
+      "board 5x6 remove=5 roughness=rough perimeter_extra=0 fill=1.00 narrow_corridor=0",
+      "half cells total 14",
+      "5x6_remove5-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 3,
+    "score": -84.49999999999997,
+    "profile": "5x6_remove5-8_half1_sol2",
+    "board_index": 5,
+    "board_macro_area": 23,
+    "board_bbox": [
+      4,
+      6
+    ],
+    "board_fill": 0.9583333333333334,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      2,
+      3,
+      2,
+      2,
+      2,
+      3
+    ],
+    "total_half_cell_count": 14,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 1,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 1",
+      "board 5x6 remove=7 roughness=rough perimeter_extra=0 fill=0.96 narrow_corridor=0",
+      "half cells total 14",
+      "5x6_remove5-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 4,
+    "score": -84.49999999999997,
+    "profile": "5x6_remove5-8_half1_sol2",
+    "board_index": 6,
+    "board_macro_area": 23,
+    "board_bbox": [
+      4,
+      6
+    ],
+    "board_fill": 0.9583333333333334,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      3,
+      2,
+      2,
+      2,
+      2,
+      3
+    ],
+    "total_half_cell_count": 14,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 1,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 1",
+      "board 5x6 remove=7 roughness=rough perimeter_extra=0 fill=0.96 narrow_corridor=0",
+      "half cells total 14",
+      "5x6_remove5-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 5,
+    "score": -127.4,
+    "profile": "6x5_remove6-8_half1_sol2",
+    "board_index": 1,
+    "board_macro_area": 24,
+    "board_bbox": [
+      5,
+      5
+    ],
+    "board_fill": 0.96,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      1,
+      3,
+      3,
+      1,
+      3,
+      3
+    ],
+    "total_half_cell_count": 14,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 1,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 1",
+      "board 6x5 remove=6 roughness=rough perimeter_extra=0 fill=0.96 narrow_corridor=0",
+      "half cells total 14",
+      "6x5_remove6-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 6,
+    "score": -150.73333333333335,
+    "profile": "6x5_remove6-8_half1_sol2",
+    "board_index": 2,
+    "board_macro_area": 24,
+    "board_bbox": [
+      5,
+      5
+    ],
+    "board_fill": 0.96,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      1,
+      1,
+      3,
+      3,
+      1,
+      3
+    ],
+    "total_half_cell_count": 12,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 1,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 1",
+      "board 6x5 remove=6 roughness=rough perimeter_extra=0 fill=0.96 narrow_corridor=0",
+      "half cells total 12",
+      "6x5_remove6-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 7,
+    "score": -153.16666666666666,
+    "profile": "5x6_remove5-8_half1_sol2",
+    "board_index": 4,
+    "board_macro_area": 23,
+    "board_bbox": [
+      4,
+      6
+    ],
+    "board_fill": 0.9583333333333334,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      1,
+      3,
+      1,
+      1,
+      2,
+      4
+    ],
+    "total_half_cell_count": 12,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 1,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 1",
+      "board 5x6 remove=7 roughness=rough perimeter_extra=0 fill=0.96 narrow_corridor=0",
+      "half cells total 12",
+      "5x6_remove5-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 8,
+    "score": -157.83333333333331,
+    "profile": "5x6_remove5-8_half1_sol2",
+    "board_index": 7,
+    "board_macro_area": 23,
+    "board_bbox": [
+      4,
+      6
+    ],
+    "board_fill": 0.9583333333333334,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      1,
+      4,
+      1,
+      1,
+      1,
+      4
+    ],
+    "total_half_cell_count": 12,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 1,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 1",
+      "board 5x6 remove=7 roughness=rough perimeter_extra=0 fill=0.96 narrow_corridor=0",
+      "half cells total 12",
+      "5x6_remove5-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 9,
+    "score": -166.06666666666666,
+    "profile": "5x6_remove5-8_half1_sol2",
+    "board_index": 3,
+    "board_macro_area": 24,
+    "board_bbox": [
+      5,
+      5
+    ],
+    "board_fill": 0.96,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      1,
+      3,
+      2,
+      2,
+      1,
+      1
+    ],
+    "total_half_cell_count": 10,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 1,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 1",
+      "board 5x6 remove=6 roughness=rough perimeter_extra=0 fill=0.96 narrow_corridor=0",
+      "half cells total 10",
+      "5x6_remove5-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 10,
+    "score": -180.0,
+    "profile": "5x6_remove5-8_half1_sol2",
+    "board_index": 2,
+    "board_macro_area": 24,
+    "board_bbox": [
+      4,
+      6
+    ],
+    "board_fill": 1.0,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      4,
+      2,
+      2,
+      4,
+      2,
+      2
+    ],
+    "total_half_cell_count": 16,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 4,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 4",
+      "board 5x6 remove=6 roughness=rough perimeter_extra=0 fill=1.00 narrow_corridor=0",
+      "half cells total 16",
+      "5x6_remove5-8_half1_sol2"
+    ]
+  },
+  {
+    "rank": 11,
+    "score": -238.16666666666666,
+    "profile": "5x6_remove5-8_half1_sol2",
+    "board_index": 8,
+    "board_macro_area": 23,
+    "board_bbox": [
+      4,
+      6
+    ],
+    "board_fill": 0.9583333333333334,
+    "board_extra_perimeter": 2,
+    "solution_count_effective_fixed": 1,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      1,
+      2,
+      2,
+      2,
+      1,
+      2
+    ],
+    "total_half_cell_count": 10,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 2,
+    "notes": [
+      "too few fixed solutions",
+      "duplicate pieces 2",
+      "board 5x6 remove=7 roughness=rough perimeter_extra=2 fill=0.96 narrow_corridor=0",
+      "half cells total 10",
+      "5x6_remove5-8_half1_sol2"
+    ]
+  }
+]

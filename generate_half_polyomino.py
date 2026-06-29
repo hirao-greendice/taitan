@@ -137,6 +137,12 @@ class Analysis:
     average_piece_candidates: float
     half_cell_count_per_piece: list[int]
     total_half_cell_count: int
+    horizontal_half_cell_count_per_piece: list[int]
+    vertical_half_cell_count_per_piece: list[int]
+    horizontal_half_cell_count: int
+    vertical_half_cell_count: int
+    horizontal_half_cell_contacts: int
+    vertical_half_cell_contacts: int
     quarter_artifact_count: int
     fragile_artifact_count: int
     duplicate_piece_count: int
@@ -228,6 +234,98 @@ def count_half_cells(cells: set[Cell] | frozenset[Cell]) -> int:
     Return how many ordinary cells are occupied by a legal half-cell mask.
     """
     return sum(1 for mask in cells_to_masks(cells).values() if mask in HALF_MASKS)
+
+
+def is_horizontal_half_mask(mask: int) -> bool:
+    return mask in (MASK_TOP, MASK_BOTTOM)
+
+
+def is_vertical_half_mask(mask: int) -> bool:
+    return mask in (MASK_LEFT, MASK_RIGHT)
+
+
+def count_horizontal_half_cells(cells: set[Cell] | frozenset[Cell]) -> int:
+    """Return how many ordinary cells use a top/bottom half mask."""
+    return sum(1 for mask in cells_to_masks(cells).values() if is_horizontal_half_mask(mask))
+
+
+def count_vertical_half_cells(cells: set[Cell] | frozenset[Cell]) -> int:
+    """Return how many ordinary cells use a left/right half mask."""
+    return sum(1 for mask in cells_to_masks(cells).values() if is_vertical_half_mask(mask))
+
+
+def count_half_cell_orientations(pieces: list[set[Cell]] | list[frozenset[Cell]]) -> dict[str, object]:
+    """Return horizontal/vertical half-cell counts across all pieces."""
+    horizontal_per_piece = [count_horizontal_half_cells(piece) for piece in pieces]
+    vertical_per_piece = [count_vertical_half_cells(piece) for piece in pieces]
+    return {
+        "horizontal_half_cell_count": sum(horizontal_per_piece),
+        "vertical_half_cell_count": sum(vertical_per_piece),
+        "horizontal_half_cell_count_per_piece": horizontal_per_piece,
+        "vertical_half_cell_count_per_piece": vertical_per_piece,
+    }
+
+
+def count_half_cell_contacts_by_orientation(
+    solution: dict[int, frozenset[Cell]],
+    pieces: list[set[Cell]] | list[frozenset[Cell]] | None = None,
+) -> dict[str, int]:
+    """
+    Count half-cell small-edge contacts with other pieces by half-mask direction.
+
+    The optional pieces argument keeps the public API aligned with callers that
+    evaluate a solution for a known piece set; the placed solution cells carry
+    the masks needed for this count.
+    """
+    del pieces
+    owner: dict[Cell, int] = {}
+    for piece_index, cells in solution.items():
+        for cell in cells:
+            owner[cell] = piece_index
+
+    contacts: dict[str, set[tuple[tuple[int, int], tuple[Cell, Cell]]]] = {
+        "horizontal": set(),
+        "vertical": set(),
+    }
+    for piece_index, cells in solution.items():
+        for (mx, my), mask in cells_to_masks(cells).items():
+            if is_horizontal_half_mask(mask):
+                orientation = "horizontal"
+            elif is_vertical_half_mask(mask):
+                orientation = "vertical"
+            else:
+                continue
+            for dx, dy in MASK_TO_OFFSETS[mask]:
+                cell = (mx * SCALE + dx, my * SCALE + dy)
+                for neighbor in neighbors4(cell):
+                    other_piece = owner.get(neighbor)
+                    if other_piece is None or other_piece == piece_index:
+                        continue
+                    piece_pair = tuple(sorted((piece_index, other_piece)))
+                    cell_pair = tuple(sorted((cell, neighbor)))
+                    contacts[orientation].add((piece_pair, cell_pair))
+    return {
+        "horizontal": len(contacts["horizontal"]),
+        "vertical": len(contacts["vertical"]),
+    }
+
+
+def best_half_cell_contacts_by_orientation(
+    solutions: list[dict[int, frozenset[Cell]]],
+    pieces: list[set[Cell]] | list[frozenset[Cell]],
+) -> dict[str, int]:
+    """Return the solution contact counts with the best overall orientation coverage."""
+    if not solutions:
+        return {"horizontal": 0, "vertical": 0}
+    return max(
+        (count_half_cell_contacts_by_orientation(solution, pieces) for solution in solutions),
+        key=lambda item: (
+            item["horizontal"] + item["vertical"],
+            min(item["horizontal"], item["vertical"]),
+            item["horizontal"],
+            item["vertical"],
+        ),
+    )
 
 
 def count_quarter_artifacts(cells: set[Cell] | frozenset[Cell]) -> int:
@@ -884,6 +982,12 @@ def analyze_candidate(
 ) -> Analysis:
     half_counts = [count_half_cells(piece) for piece in pieces]
     total_half = sum(half_counts)
+    orientation_counts = count_half_cell_orientations(pieces)
+    horizontal_half_count = int(orientation_counts["horizontal_half_cell_count"])
+    vertical_half_count = int(orientation_counts["vertical_half_cell_count"])
+    horizontal_per_piece = list(orientation_counts["horizontal_half_cell_count_per_piece"])
+    vertical_per_piece = list(orientation_counts["vertical_half_cell_count_per_piece"])
+    contacts_by_orientation = best_half_cell_contacts_by_orientation(solutions, pieces)
     quarter_count = count_quarter_artifacts(board) + sum(
         count_quarter_artifacts(piece) for piece in pieces
     )
@@ -906,6 +1010,10 @@ def analyze_candidate(
         fixed_pieces=fixed,
         average_piece_candidates=avg_candidates,
         total_half_cell_count=total_half,
+        horizontal_half_cell_count=horizontal_half_count,
+        vertical_half_cell_count=vertical_half_count,
+        horizontal_half_cell_contacts=contacts_by_orientation["horizontal"],
+        vertical_half_cell_contacts=contacts_by_orientation["vertical"],
         quarter_artifact_count=quarter_count,
         fragile_artifact_count=fragile_count,
         duplicate_piece_count=duplicate_count,
@@ -918,6 +1026,12 @@ def analyze_candidate(
         average_piece_candidates=avg_candidates,
         half_cell_count_per_piece=half_counts,
         total_half_cell_count=total_half,
+        horizontal_half_cell_count_per_piece=horizontal_per_piece,
+        vertical_half_cell_count_per_piece=vertical_per_piece,
+        horizontal_half_cell_count=horizontal_half_count,
+        vertical_half_cell_count=vertical_half_count,
+        horizontal_half_cell_contacts=contacts_by_orientation["horizontal"],
+        vertical_half_cell_contacts=contacts_by_orientation["vertical"],
         quarter_artifact_count=quarter_count,
         fragile_artifact_count=fragile_count,
         duplicate_piece_count=duplicate_count,
@@ -937,6 +1051,10 @@ def score_candidate(
     quarter_artifact_count: int,
     fragile_artifact_count: int,
     duplicate_piece_count: int,
+    horizontal_half_cell_count: int = 0,
+    vertical_half_cell_count: int = 0,
+    horizontal_half_cell_contacts: int = 0,
+    vertical_half_cell_contacts: int = 0,
 ) -> float:
     if quarter_artifact_count:
         return -10_000.0 - quarter_artifact_count * 1000
@@ -947,6 +1065,18 @@ def score_candidate(
     target_mid = (min_solutions + max_solutions) / 2
     score = 120.0 - abs(solution_count - target_mid) * 5.0
     score += min(total_half_cell_count, len(pieces) * 4) * 4.0
+    score += min(horizontal_half_cell_count, vertical_half_cell_count) * 50.0
+    score -= abs(horizontal_half_cell_count - vertical_half_cell_count) * 20.0
+    if horizontal_half_cell_count == 0:
+        score -= 500.0
+    if vertical_half_cell_count == 0:
+        score -= 500.0
+    score += horizontal_half_cell_contacts * 40.0
+    score += vertical_half_cell_contacts * 40.0
+    if horizontal_half_cell_contacts == 0:
+        score -= 250.0
+    if vertical_half_cell_contacts == 0:
+        score -= 250.0
     score += max(0, len(pieces) - fixed_pieces) * 8.0
 
     macro_board = {(x // SCALE, y // SCALE) for x, y in board}
@@ -979,6 +1109,18 @@ def score_candidate(
             skinny_penalty += 1
     score -= skinny_penalty * 35.0
     return score
+
+
+def analysis_meets_half_orientation_requirements(
+    analysis: Analysis,
+    args: argparse.Namespace,
+) -> bool:
+    return (
+        analysis.horizontal_half_cell_count >= getattr(args, "min_horizontal_half_cells", 0)
+        and analysis.vertical_half_cell_count >= getattr(args, "min_vertical_half_cells", 0)
+        and analysis.horizontal_half_cell_contacts >= getattr(args, "min_horizontal_half_contacts", 0)
+        and analysis.vertical_half_cell_contacts >= getattr(args, "min_vertical_half_contacts", 0)
+    )
 
 
 def generate_pair_swap_candidate(
@@ -1101,6 +1243,8 @@ def generate_pair_swap_candidate(
         return None
     if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
         return None
+    if not analysis_meets_half_orientation_requirements(analysis, args):
+        return None
     return Candidate(
         board=board,
         pieces=pieces,
@@ -1183,6 +1327,8 @@ def generate_candidate(
     if analysis.quarter_artifact_count != 0 or analysis.fragile_artifact_count != 0:
         return None
     if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
+        return None
+    if not analysis_meets_half_orientation_requirements(analysis, args):
         return None
     return Candidate(
         board=board,
@@ -1277,6 +1423,8 @@ def generate_guided_candidate(
     if analysis.quarter_artifact_count != 0 or analysis.fragile_artifact_count != 0:
         return None
     if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
+        return None
+    if not analysis_meets_half_orientation_requirements(analysis, args):
         return None
     return Candidate(
         board=board,
@@ -1481,6 +1629,12 @@ def analysis_to_json(analysis: Analysis) -> dict[str, object]:
         "average_piece_candidates": analysis.average_piece_candidates,
         "half_cell_count_per_piece": analysis.half_cell_count_per_piece,
         "total_half_cell_count": analysis.total_half_cell_count,
+        "horizontal_half_cell_count": analysis.horizontal_half_cell_count,
+        "vertical_half_cell_count": analysis.vertical_half_cell_count,
+        "horizontal_half_cell_count_per_piece": analysis.horizontal_half_cell_count_per_piece,
+        "vertical_half_cell_count_per_piece": analysis.vertical_half_cell_count_per_piece,
+        "horizontal_half_cell_contacts": analysis.horizontal_half_cell_contacts,
+        "vertical_half_cell_contacts": analysis.vertical_half_cell_contacts,
         "quarter_artifact_count": analysis.quarter_artifact_count,
         "fragile_artifact_count": analysis.fragile_artifact_count,
         "duplicate_piece_count": analysis.duplicate_piece_count,
@@ -1489,6 +1643,8 @@ def analysis_to_json(analysis: Analysis) -> dict[str, object]:
 
 
 def candidate_to_json(candidate: Candidate) -> dict[str, object]:
+    piece_areas_small = [len(piece) for piece in candidate.pieces]
+    piece_areas_ordinary_equiv = [area / 4.0 for area in piece_areas_small]
     return {
         "scale": SCALE,
         "piece_count": len(candidate.pieces),
@@ -1497,10 +1653,16 @@ def candidate_to_json(candidate: Candidate) -> dict[str, object]:
             {
                 "id": LETTERS[i],
                 "cells": sorted([list(cell) for cell in normalize_cells(piece)]),
+                "area_small": len(piece),
+                "area_ordinary_equiv": len(piece) / 4.0,
                 "half_cell_count": count_half_cells(piece),
+                "horizontal_half_cell_count": count_horizontal_half_cells(piece),
+                "vertical_half_cell_count": count_vertical_half_cells(piece),
             }
             for i, piece in enumerate(candidate.pieces)
         ],
+        "piece_areas_small": piece_areas_small,
+        "piece_areas_ordinary_equiv": piece_areas_ordinary_equiv,
         "solution_count": candidate.solution_count,
         "rotated_solution_count": candidate.analysis.rotated_solution_count,
         "solutions": [
@@ -1514,6 +1676,12 @@ def candidate_to_json(candidate: Candidate) -> dict[str, object]:
         "quarter_artifact_count": candidate.analysis.quarter_artifact_count,
         "fragile_artifact_count": candidate.analysis.fragile_artifact_count,
         "duplicate_piece_count": candidate.analysis.duplicate_piece_count,
+        "horizontal_half_cell_count": candidate.analysis.horizontal_half_cell_count,
+        "vertical_half_cell_count": candidate.analysis.vertical_half_cell_count,
+        "horizontal_half_cell_count_per_piece": candidate.analysis.horizontal_half_cell_count_per_piece,
+        "vertical_half_cell_count_per_piece": candidate.analysis.vertical_half_cell_count_per_piece,
+        "horizontal_half_cell_contacts": candidate.analysis.horizontal_half_cell_contacts,
+        "vertical_half_cell_contacts": candidate.analysis.vertical_half_cell_contacts,
         "analysis": analysis_to_json(candidate.analysis),
     }
 
@@ -1825,6 +1993,11 @@ def write_gallery_html(candidates: list[Candidate], path: Path) -> None:
             <span class="metric">重複 ${{c.duplicate_piece_count}}</span>
             <span class="metric">1/4 ${{c.quarter_artifact_count}}</span>
             <span class="metric">半マス ${{c.analysis.total_half_cell_count}}</span>
+            <span class="metric">横半 ${{c.horizontal_half_cell_count}}</span>
+            <span class="metric">縦半 ${{c.vertical_half_cell_count}}</span>
+            <span class="metric">横接触 ${{c.horizontal_half_cell_contacts}}</span>
+            <span class="metric">縦接触 ${{c.vertical_half_cell_contacts}}</span>
+            <span class="metric">面積 ${{c.piece_areas_ordinary_equiv.map(v => v.toFixed(1)).join(',')}}</span>
           </div>
         </article>
       `).join('');
@@ -1845,7 +2018,7 @@ def write_gallery_html(candidates: list[Candidate], path: Path) -> None:
       }}).join('');
       const pieces = c.pieces.map((p, i) => `
         <div class="piece">
-          <div class="piece-title">Piece ${{p.id}} / 半マス ${{p.half_cell_count}}</div>
+          <div class="piece-title">Piece ${{p.id}} / 面積 ${{p.area_small}} (${{p.area_ordinary_equiv.toFixed(1)}}) / 半マス ${{p.half_cell_count}} / 横 ${{p.horizontal_half_cell_count}} / 縦 ${{p.vertical_half_cell_count}}</div>
           ${{svgGrid(p.cells, Object.fromEntries(p.cells.map(cell => [key(cell), i])), null, 14)}}
         </div>
       `).join('');
@@ -1858,6 +2031,14 @@ def write_gallery_html(candidates: list[Candidate], path: Path) -> None:
             <span class="metric">脆さ ${{c.fragile_artifact_count}}</span>
             <span class="metric">重複 ${{c.duplicate_piece_count}}</span>
             <span class="metric">1/4 ${{c.quarter_artifact_count}}</span>
+            <span class="metric">横半 ${{c.horizontal_half_cell_count}}</span>
+            <span class="metric">縦半 ${{c.vertical_half_cell_count}}</span>
+            <span class="metric">横半/ピース ${{c.horizontal_half_cell_count_per_piece.join(',')}}</span>
+            <span class="metric">縦半/ピース ${{c.vertical_half_cell_count_per_piece.join(',')}}</span>
+            <span class="metric">横接触 ${{c.horizontal_half_cell_contacts}}</span>
+            <span class="metric">縦接触 ${{c.vertical_half_cell_contacts}}</span>
+            <span class="metric">面積 small ${{c.piece_areas_small.join(',')}}</span>
+            <span class="metric">面積 ordinary ${{c.piece_areas_ordinary_equiv.map(v => v.toFixed(1)).join(',')}}</span>
             <span class="metric">Score ${{c.score.toFixed(1)}}</span>
           </div>
         </div>
@@ -2123,6 +2304,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--allow-holes", action="store_true")
     parser.add_argument("--allow-identical-pieces", action="store_true")
     parser.add_argument("--min-half-cells", type=int, default=3)
+    parser.add_argument("--min-horizontal-half-cells", type=int, default=0)
+    parser.add_argument("--min-vertical-half-cells", type=int, default=0)
+    parser.add_argument("--min-horizontal-half-contacts", type=int, default=0)
+    parser.add_argument("--min-vertical-half-contacts", type=int, default=0)
     parser.add_argument("--solution-count-limit", type=int, default=SOLUTION_COUNT_LIMIT)
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
@@ -2144,6 +2329,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--solution-count-limit must be at least --max-solutions")
     if args.min_half_cells < 0:
         raise SystemExit("--min-half-cells must be non-negative")
+    if args.min_horizontal_half_cells < 0 or args.min_vertical_half_cells < 0:
+        raise SystemExit("directional half-cell minimums must be non-negative")
+    if args.min_horizontal_half_contacts < 0 or args.min_vertical_half_contacts < 0:
+        raise SystemExit("directional half-cell contact minimums must be non-negative")
 
 
 def main(argv: list[str] | None = None) -> int:

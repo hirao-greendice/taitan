@@ -1,0 +1,81 @@
+Board:
+##########
+##########
+##########
+##########
+##########
+##########
+##########
+##########
+##########
+##########
+
+Solution 1:
+BBBDDDDDDD
+BBBDDDDDDD
+BBBBDDFFDD
+BBBBFFFFFF
+BBAAFFFFFF
+AAAAAAFFEE
+AAAAAAEEEE
+CCAACCEEEE
+CCCCCCCEEE
+CCCCCCCEEE
+
+Piece A:
+..##..
+######
+######
+..##..
+
+Piece B:
+###.
+###.
+####
+####
+##..
+
+Piece C:
+##..##.
+#######
+#######
+
+Piece D:
+#######
+#######
+.##..##
+
+Piece E:
+..##
+####
+####
+.###
+.###
+
+Piece F:
+..##..
+######
+######
+..##..
+
+Analysis:
+{
+  "solution_count": 1,
+  "rotated_solution_count": 0,
+  "fixed_pieces": 6,
+  "movable_pieces": 0,
+  "average_piece_candidates": 10.666666666666666,
+  "half_cell_count_per_piece": [
+    4,
+    2,
+    3,
+    3,
+    2,
+    4
+  ],
+  "total_half_cell_count": 18,
+  "quarter_artifact_count": 0,
+  "fragile_artifact_count": 0,
+  "duplicate_piece_count": 3,
+  "difficulty_score": -9000.0
+}
