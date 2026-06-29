@@ -1,0 +1,90 @@
+Board:
+###...##..#####.
+###.###########.
+################
+################
+..######..######
+..####....####..
+######..######..
+####....####....
+
+Solution 1:
+CCC...AA..BBEEE.
+CCC.AAAABBBBEEE.
+CCCCAAAABBBBEEEE
+CCCCAAAABBBBEEEE
+..CCDDAA..BBFFEE
+..DDDD....FFFF..
+DDDDDD..FFFFFF..
+DDDD....FFFF....
+
+Solution 2:
+CCC...BB..AAEEE.
+CCC.BBBBAAAAEEE.
+CCCCBBBBAAAAEEEE
+CCCCBBBBAAAAEEEE
+..CCDDBB..AAFFEE
+..DDDD....FFFF..
+DDDDDD..FFFFFF..
+DDDD....FFFF....
+
+Piece A:
+..##
+####
+####
+####
+..##
+
+Piece B:
+..##
+####
+####
+####
+..##
+
+Piece C:
+###.
+###.
+####
+####
+..##
+
+Piece D:
+....##
+..####
+######
+####..
+
+Piece E:
+###.
+###.
+####
+####
+..##
+
+Piece F:
+....##
+..####
+######
+####..
+
+Analysis:
+{
+  "solution_count": 8,
+  "rotated_solution_count": 8,
+  "fixed_pieces": 0,
+  "movable_pieces": 6,
+  "average_piece_candidates": 5.666666666666667,
+  "half_cell_count_per_piece": [
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "total_half_cell_count": 12,
+  "quarter_artifact_count": 0,
+  "fragile_artifact_count": 0,
+  "difficulty_score": 729.1261210037025
+}
