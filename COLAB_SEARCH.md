@@ -32,10 +32,21 @@ Ranking preferences:
 python -m pip install -r requirements.txt
 ```
 
-Balanced PowerShell run:
+Debug-first PowerShell run:
 
 ```powershell
-python ranked_ideal_search.py --effort balanced --total-time-limit 7200 --workers 8 --output-dir out_ranked --verbose
+python ranked_ideal_search.py --effort relaxed --total-time-limit 900 --library-target 800 --library-time-limit 40 --solve-time-limit 45 --solver-candidates-per-board 12 --max-solver-shapes 3000 --max-solver-placements 50000 --random-fallback-time-limit 120 --fallback-min-half-cells 1 --workers 8 --keep-candidates 12 --seed 303 --output-dir out_debug --write-near-misses --near-miss-limit 20 --accept-one-solution-nearmiss --verbose
+```
+
+Open:
+
+- `out_debug/index.html` for accepted candidates
+- `out_debug/near_miss/index.html` for rejected-but-interesting candidates
+
+Direct verified PowerShell run:
+
+```powershell
+python verified_direct_search.py --min-half-cells 1 --min-solutions 2 --max-solutions 100 --allow-identical-pieces --board-w 6 --board-h 5 --time-limit 1800 --candidates 20 --seed 1001 --output-dir out_direct --verbose
 ```
 
 Deep local run for a gaming PC:
@@ -85,6 +96,47 @@ Then:
   --workers 2 \
   --keep-candidates 12 \
   --output-dir out_ranked \
+  --verbose
+```
+
+Debug-first Colab run with near misses:
+
+```python
+!python ranked_ideal_search.py \
+  --effort relaxed \
+  --total-time-limit 900 \
+  --library-target 800 \
+  --library-time-limit 40 \
+  --solve-time-limit 45 \
+  --solver-candidates-per-board 12 \
+  --max-solver-shapes 3000 \
+  --max-solver-placements 50000 \
+  --random-fallback-time-limit 120 \
+  --fallback-min-half-cells 1 \
+  --workers 2 \
+  --keep-candidates 12 \
+  --seed 303 \
+  --output-dir out_debug \
+  --write-near-misses \
+  --near-miss-limit 20 \
+  --accept-one-solution-nearmiss \
+  --verbose
+```
+
+Direct verified Colab run:
+
+```python
+!python verified_direct_search.py \
+  --min-half-cells 1 \
+  --min-solutions 2 \
+  --max-solutions 100 \
+  --allow-identical-pieces \
+  --board-w 6 \
+  --board-h 5 \
+  --time-limit 1800 \
+  --candidates 20 \
+  --seed 1001 \
+  --output-dir out_direct \
   --verbose
 ```
 

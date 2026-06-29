@@ -728,6 +728,8 @@ def orientations(
 
 def canonical_signature(cells: set[Cell] | frozenset[Cell]) -> tuple[Cell, ...]:
     variants = orientations(cells, allow_rotate=True, allow_mirror=False)
+    if not variants:
+        return tuple(sorted(normalize_cells(cells)))
     return min(tuple(sorted(v)) for v in variants)
 
 

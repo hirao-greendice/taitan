@@ -65,6 +65,18 @@ class PlacementRecord:
     cells: frozenset[Cell]
 
 
+@dataclass(frozen=True)
+class CpsatSolutionProof:
+    layer: int
+    placements: tuple[PlacementRecord, ...]
+
+
+@dataclass(frozen=True)
+class CpsatCandidate:
+    shapes: tuple[ShapeRecord, ...]
+    proofs: tuple[CpsatSolutionProof, ...]
+
+
 def align_cells(cells: set[Cell] | frozenset[Cell]) -> set[Cell]:
     """Normalize without shifting the 2x2 ordinary-cell grid out of phase."""
     min_x = min(x for x, _ in cells)
@@ -535,12 +547,127 @@ def enumerate_shape_placements(
     return placements
 
 
+def enumerate_phase_preserving_placements(
+    board: set[Cell],
+    pieces: list[set[Cell]],
+) -> tuple[list[list[base.Placement]], dict[Cell, int], int]:
+    board_cells = sorted(board)
+    index = {cell: i for i, cell in enumerate(board_cells)}
+    board_mask = (1 << len(board_cells)) - 1
+    _, _, board_max_x, board_max_y = base.bounds(board)
+
+    placements_by_piece: list[list[base.Placement]] = []
+    for piece_index, piece in enumerate(pieces):
+        aligned = align_cells(piece)
+        _, _, piece_max_x, piece_max_y = base.bounds(aligned)
+        piece_placements: list[base.Placement] = []
+        for ty in range(0, board_max_y - piece_max_y + 1, base.SCALE):
+            for tx in range(0, board_max_x - piece_max_x + 1, base.SCALE):
+                placed = frozenset((x + tx, y + ty) for x, y in aligned)
+                if not placed <= board:
+                    continue
+                mask = 0
+                for cell in placed:
+                    mask |= 1 << index[cell]
+                piece_placements.append(
+                    base.Placement(
+                        piece_index=piece_index,
+                        cells=placed,
+                        mask=mask,
+                        origin=(tx, ty),
+                        orientation=0,
+                    )
+                )
+        unique: dict[int, base.Placement] = {}
+        for placement in piece_placements:
+            unique.setdefault(placement.mask, placement)
+        placements_by_piece.append(list(unique.values()))
+    return placements_by_piece, index, board_mask
+
+
+def count_solutions_fixed_phase(
+    board: set[Cell],
+    pieces: list[set[Cell]],
+    limit: int,
+) -> tuple[int, list[dict[int, frozenset[Cell]]], list[list[base.Placement]]]:
+    placements_by_piece, _index, board_mask = enumerate_phase_preserving_placements(board, pieces)
+    if any(not placements for placements in placements_by_piece):
+        return 0, [], placements_by_piece
+
+    cell_to_placements: dict[int, list[tuple[int, base.Placement]]] = defaultdict(list)
+    for piece_index, placements_for_piece in enumerate(placements_by_piece):
+        for placement in placements_for_piece:
+            m = placement.mask
+            while m:
+                bit = m & -m
+                cell_index = bit.bit_length() - 1
+                cell_to_placements[cell_index].append((piece_index, placement))
+                m ^= bit
+
+    remaining_start = frozenset(range(len(pieces)))
+    solutions: list[dict[int, frozenset[Cell]]] = []
+    count = 0
+
+    def search(occupied: int, remaining: frozenset[int], chosen: dict[int, base.Placement]) -> None:
+        nonlocal count
+        if count >= limit:
+            return
+        if not remaining:
+            if occupied == board_mask:
+                count += 1
+                if len(solutions) < limit:
+                    solutions.append({p: placement.cells for p, placement in chosen.items()})
+            return
+
+        empty_mask = board_mask & ~occupied
+        best_cell_index = None
+        best_options: list[tuple[int, base.Placement]] | None = None
+        m = empty_mask
+        while m:
+            bit = m & -m
+            cell_index = bit.bit_length() - 1
+            options = [
+                (p, placement)
+                for p, placement in cell_to_placements[cell_index]
+                if p in remaining and (placement.mask & occupied) == 0
+            ]
+            if not options:
+                return
+            if best_options is None or len(options) < len(best_options):
+                best_cell_index = cell_index
+                best_options = options
+                if len(options) == 1:
+                    break
+            m ^= bit
+
+        assert best_cell_index is not None and best_options is not None
+        best_options.sort(key=lambda item: (item[0], item[1].origin, item[1].orientation))
+        for piece_index, placement in best_options:
+            chosen[piece_index] = placement
+            search(
+                occupied | placement.mask,
+                frozenset(p for p in remaining if p != piece_index),
+                chosen,
+            )
+            chosen.pop(piece_index, None)
+            if count >= limit:
+                return
+
+    search(0, remaining_start, {})
+    return count, solutions, placements_by_piece
+
+
 def _build_cpsat_model(
     board: set[Cell],
     shapes: list[ShapeRecord],
     placements: list[PlacementRecord],
     args: argparse.Namespace,
-) -> tuple[cp_model.CpModel, dict[int, cp_model.IntVar]] | None:
+) -> tuple[
+    cp_model.CpModel,
+    dict[int, cp_model.IntVar],
+    dict[tuple[int, int], cp_model.IntVar],
+    dict[int, PlacementRecord],
+] | None:
     if cp_model is None:
         raise SystemExit(
             "OR-Tools is not installed. Run: python -m pip install -r requirements.txt"
@@ -607,7 +734,7 @@ def _build_cpsat_model(
         sum(shape.half_count * y[shape.id] for shape in shapes)
         - sum(shape.fragile_count * 20 * y[shape.id] for shape in shapes)
     )
-    return model, y
+    return model, y, x, {placement.id: placement for placement in placements}
 
 
 def solve_with_cpsat_candidates(
@@ -616,15 +743,15 @@ def solve_with_cpsat_candidates(
     placements: list[PlacementRecord],
     args: argparse.Namespace,
     max_candidates: int = 1,
-) -> list[list[ShapeRecord]]:
+) -> list[CpsatCandidate]:
     built = _build_cpsat_model(board, shapes, placements, args)
     if built is None:
         return []
 
-    model, y = built
+    model, y, x, placement_by_id = built
     selected_by_id = {shape.id: shape for shape in shapes}
     start = time.monotonic()
-    results: list[list[ShapeRecord]] = []
+    results: list[CpsatCandidate] = []
     seen: set[tuple[int, ...]] = set()
 
     for attempt in range(max(1, max_candidates)):
@@ -646,7 +773,17 @@ def solve_with_cpsat_candidates(
         if selected_ids in seen:
             break
         seen.add(selected_ids)
-        results.append([selected_by_id[i] for i in selected_ids])
+        selected_shapes = tuple(selected_by_id[i] for i in selected_ids)
+
+        proofs: list[CpsatSolutionProof] = []
+        for layer in range(args.required_solutions):
+            chosen = tuple(
+                placement_by_id[placement_id]
+                for placement_id in sorted(placement_by_id)
+                if solver.Value(x[(layer, placement_id)]) == 1
+            )
+            proofs.append(CpsatSolutionProof(layer=layer, placements=chosen))
+        results.append(CpsatCandidate(shapes=selected_shapes, proofs=tuple(proofs)))
 
         # Ask CP-SAT for a genuinely different set of physical cuts next time.
         model.Add(sum(y[i] for i in selected_ids) <= args.pieces - 1)
@@ -664,7 +801,53 @@ def solve_with_cpsat(
     if not candidates:
         return None
 
-    return candidates[0]
+    return list(candidates[0].shapes)
+
+
+def verify_cpsat_proof_cover(
+    board: set[Cell],
+    candidate: CpsatCandidate,
+    args: argparse.Namespace,
+) -> tuple[bool, str]:
+    if not candidate.proofs:
+        return False, "no proof layers"
+    selected_shape_ids = {shape.id for shape in candidate.shapes}
+    board_set = set(board)
+
+    for proof in candidate.proofs:
+        if len(proof.placements) != args.pieces:
+            return (
+                False,
+                f"proof layer {proof.layer} failed: used {len(proof.placements)} placements, expected {args.pieces}",
+            )
+        used_shape_ids = {placement.shape_id for placement in proof.placements}
+        if used_shape_ids != selected_shape_ids:
+            return (
+                False,
+                f"proof layer {proof.layer} failed: used shape ids differ from selected shape ids",
+            )
+
+        covered: set[Cell] = set()
+        for placement in proof.placements:
+            if not placement.cells <= board_set:
+                outside = sorted(placement.cells - board_set)[:1]
+                return (
+                    False,
+                    f"proof layer {proof.layer} failed: placement {placement.id} outside board at {outside}",
+                )
+            overlap = covered & placement.cells
+            if overlap:
+                return (
+                    False,
+                    f"proof layer {proof.layer} failed: overlap at cell {sorted(overlap)[0]}",
+                )
+            covered |= set(placement.cells)
+        if covered != board_set:
+            return (
+                False,
+                f"proof layer {proof.layer} failed: covered {len(covered)} cells but board has {len(board_set)}",
+            )
+    return True, f"{len(candidate.proofs)} proof layer(s) cover the board"
 
 
 def verify_and_write(

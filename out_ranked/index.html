@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Half-cell puzzle gallery</title>
+  <style>
+    :root {
+      --bg: #f6f4ee;
+      --ink: #202124;
+      --muted: #5f6368;
+      --line: #d4cfc4;
+      --panel: #ffffff;
+      --accent: #0f766e;
+      --warn: #b45309;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    header {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 22px 14px;
+      border-bottom: 1px solid var(--line);
+      background: #fffdf8;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+    .summary {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .summary span, .metric {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 6px;
+      padding: 5px 8px;
+      white-space: nowrap;
+    }
+    main {
+      display: grid;
+      grid-template-columns: minmax(260px, 34vw) 1fr;
+      min-height: calc(100vh - 68px);
+    }
+    #cards {
+      padding: 16px;
+      overflow: auto;
+      border-right: 1px solid var(--line);
+      display: grid;
+      align-content: start;
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 10px;
+      cursor: pointer;
+      display: grid;
+      gap: 8px;
+    }
+    .card.active {
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
+    }
+    .card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .card-title {
+      font-size: 15px;
+      color: var(--ink);
+      font-weight: 700;
+    }
+    .mini {
+      width: 100%;
+      max-height: 150px;
+      display: block;
+      border: 1px solid var(--line);
+      background: #faf9f5;
+    }
+    #detail {
+      padding: 18px;
+      overflow: auto;
+      display: grid;
+      gap: 16px;
+      align-content: start;
+    }
+    .detail-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .detail-head h2 {
+      margin: 0;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+    .metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .section {
+      display: grid;
+      gap: 8px;
+    }
+    .section h3 {
+      margin: 0;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+    .viewer {
+      width: 100%;
+      overflow: auto;
+      border: 1px solid var(--line);
+      background: #fffdf8;
+      border-radius: 8px;
+      padding: 10px;
+    }
+    .solution-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 12px;
+    }
+    .pieces {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 10px;
+    }
+    .piece {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px;
+    }
+    .piece-title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    svg { max-width: 100%; height: auto; display: block; }
+    @media (max-width: 860px) {
+      header { align-items: start; flex-direction: column; }
+      main { grid-template-columns: 1fr; }
+      #cards {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        max-height: 48vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>半マスずれポリオミノ候補</h1>
+    <div class="summary" id="summary"></div>
+  </header>
+  <main>
+    <section id="cards"></section>
+    <section id="detail"></section>
+  </main>
+  <script type="application/json" id="candidate-data">[]</script>
+  <script>
+    const DATA = JSON.parse(document.getElementById('candidate-data').textContent);
+    const COLORS = ["#df5b57", "#4f8bd6", "#55a868", "#c77cce", "#d79542", "#4db6ac", "#8d6e63", "#9e9ac8", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"];
+    let selected = 0;
+
+    function cellBounds(cells) {
+      let xs = cells.map(c => c[0]);
+      let ys = cells.map(c => c[1]);
+      return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    }
+
+    function key(c) { return c[0] + ',' + c[1]; }
+
+    function svgGrid(cells, assignment, labels, scale) {
+      if (!cells.length) return '';
+      const [minX, minY, maxX, maxY] = cellBounds(cells);
+      const size = scale || 14;
+      const pad = 10;
+      const w = (maxX - minX + 1) * size + pad * 2;
+      const h = (maxY - minY + 1) * size + pad * 2;
+      const cellSet = new Set(cells.map(key));
+      let rects = '';
+      for (const c of cells) {
+        const k = key(c);
+        const p = assignment ? assignment[k] : -1;
+        const fill = p >= 0 ? COLORS[p % COLORS.length] : '#cfd8dc';
+        const x = pad + (c[0] - minX) * size;
+        const y = pad + (c[1] - minY) * size;
+        rects += `<rect x="${x}" y="${y}" width="${size}" height="${size}" fill="${fill}"/>`;
+      }
+      let lines = '';
+      for (let x = minX; x <= maxX + 1; x++) {
+        const sx = pad + (x - minX) * size;
+        const strong = x % 2 === 0;
+        lines += `<line x1="${sx}" y1="${pad}" x2="${sx}" y2="${pad + (maxY - minY + 1) * size}" stroke="${strong ? '#817c70' : '#d7d2c6'}" stroke-width="${strong ? 1.4 : 0.7}"/>`;
+      }
+      for (let y = minY; y <= maxY + 1; y++) {
+        const sy = pad + (y - minY) * size;
+        const strong = y % 2 === 0;
+        lines += `<line x1="${pad}" y1="${sy}" x2="${pad + (maxX - minX + 1) * size}" y2="${sy}" stroke="${strong ? '#817c70' : '#d7d2c6'}" stroke-width="${strong ? 1.4 : 0.7}"/>`;
+      }
+      let borders = '';
+      if (assignment) {
+        const dirs = [[-1,0,'l'], [1,0,'r'], [0,-1,'t'], [0,1,'b']];
+        for (const c of cells) {
+          const p = assignment[key(c)];
+          const x = pad + (c[0] - minX) * size;
+          const y = pad + (c[1] - minY) * size;
+          for (const [dx, dy, side] of dirs) {
+            const nk = (c[0] + dx) + ',' + (c[1] + dy);
+            if (cellSet.has(nk) && assignment[nk] === p) continue;
+            if (side === 'l') borders += `<line x1="${x}" y1="${y}" x2="${x}" y2="${y + size}" stroke="#222" stroke-width="2"/>`;
+            if (side === 'r') borders += `<line x1="${x + size}" y1="${y}" x2="${x + size}" y2="${y + size}" stroke="#222" stroke-width="2"/>`;
+            if (side === 't') borders += `<line x1="${x}" y1="${y}" x2="${x + size}" y2="${y}" stroke="#222" stroke-width="2"/>`;
+            if (side === 'b') borders += `<line x1="${x}" y1="${y + size}" x2="${x + size}" y2="${y + size}" stroke="#222" stroke-width="2"/>`;
+          }
+        }
+      }
+      let text = '';
+      if (labels && assignment) {
+        for (const label of Object.keys(labels)) {
+          const pts = labels[label];
+          const cx = pts.reduce((a, c) => a + c[0], 0) / pts.length;
+          const cy = pts.reduce((a, c) => a + c[1], 0) / pts.length;
+          const sx = pad + (cx - minX + 0.5) * size;
+          const sy = pad + (cy - minY + 0.5) * size;
+          text += `<text x="${sx}" y="${sy}" text-anchor="middle" dominant-baseline="central" font-size="${Math.max(10, size)}" font-weight="700" font-family="Arial" fill="#202020" paint-order="stroke" stroke="#fff" stroke-width="3">${label}</text>`;
+        }
+      }
+      return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="candidate grid">${rects}${borders}${lines}${text}</svg>`;
+    }
+
+    function assignmentFromSolution(solution) {
+      const assignment = {};
+      const labels = {};
+      Object.keys(solution).forEach((id, idx) => {
+        labels[id] = solution[id];
+        for (const c of solution[id]) assignment[key(c)] = idx;
+      });
+      return [assignment, labels];
+    }
+
+    function renderCards() {
+      const cards = document.getElementById('cards');
+      cards.innerHTML = DATA.map((c, i) => `
+        <article class="card ${i === selected ? 'active' : ''}" data-i="${i}">
+          <div class="card-top"><span class="card-title">候補 ${i + 1}</span><span>固定 ${c.solution_count} 解</span></div>
+          <div class="mini">${svgGrid(c.board, null, null, 7)}</div>
+          <div class="metrics">
+            <span class="metric">脆さ ${c.fragile_artifact_count}</span>
+            <span class="metric">重複 ${c.duplicate_piece_count}</span>
+            <span class="metric">1/4 ${c.quarter_artifact_count}</span>
+            <span class="metric">半マス ${c.analysis.total_half_cell_count}</span>
+          </div>
+        </article>
+      `).join('');
+      cards.querySelectorAll('.card').forEach(card => {
+        card.addEventListener('click', () => {
+          selected = Number(card.dataset.i);
+          render();
+        });
+      });
+    }
+
+    function renderDetail() {
+      const c = DATA[selected];
+      const detail = document.getElementById('detail');
+      const solutions = c.solutions.slice(0, 8).map((s, i) => {
+        const [a, labels] = assignmentFromSolution(s);
+        return `<div class="viewer"><h3>Solution ${i + 1}</h3>${svgGrid(c.board, a, labels, 16)}</div>`;
+      }).join('');
+      const pieces = c.pieces.map((p, i) => `
+        <div class="piece">
+          <div class="piece-title">Piece ${p.id} / 半マス ${p.half_cell_count}</div>
+          ${svgGrid(p.cells, Object.fromEntries(p.cells.map(cell => [key(cell), i])), null, 14)}
+        </div>
+      `).join('');
+      detail.innerHTML = `
+        <div class="detail-head">
+          <h2>候補 ${selected + 1}</h2>
+          <div class="metrics">
+            <span class="metric">固定向き ${c.solution_count} 解</span>
+            <span class="metric">回転あり ${c.rotated_solution_count} 解</span>
+            <span class="metric">脆さ ${c.fragile_artifact_count}</span>
+            <span class="metric">重複 ${c.duplicate_piece_count}</span>
+            <span class="metric">1/4 ${c.quarter_artifact_count}</span>
+            <span class="metric">Score ${c.score.toFixed(1)}</span>
+          </div>
+        </div>
+        <div class="section">
+          <h3>Board</h3>
+          <div class="viewer">${svgGrid(c.board, null, null, 16)}</div>
+        </div>
+        <div class="section">
+          <h3>Solutions</h3>
+          <div class="solution-grid">${solutions}</div>
+        </div>
+        <div class="section">
+          <h3>Pieces</h3>
+          <div class="pieces">${pieces}</div>
+        </div>
+      `;
+    }
+
+    function renderSummary() {
+      document.getElementById('summary').innerHTML = `
+        <span>${DATA.length} candidates</span>
+        <span>fixed orientation</span>
+        <span>fragile = 0</span>
+        <span>duplicate = 0</span>
+        <span>quarter = 0</span>
+      `;
+    }
+
+    function render() {
+      renderSummary();
+      renderCards();
+      renderDetail();
+    }
+    render();
+  </script>
+</body>
+</html>

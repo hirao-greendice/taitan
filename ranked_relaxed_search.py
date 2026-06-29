@@ -23,7 +23,6 @@ import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from html import escape
 from pathlib import Path
 
 import generate_half_polyomino as base
@@ -37,24 +36,6 @@ class RankedResult:
     profile_name: str
     rank_score: float
     notes: list[str]
-
-
-@dataclass
-class NearMiss:
-    candidate: base.Candidate
-    reject_reason: str
-    raw_solution_count: int
-    effective_solution_count: int
-    proof_layer_count: int
-    proof_valid: bool
-    proof_message: str
-    profile_name: str
-    board_index: int
-    seed: int
-    selected_shape_ids: list[int]
-    selected_shape_cells: list[list[tuple[int, int]]]
-    board_metrics: dict[str, float]
-    placements_by_piece_counts: list[int]
 
 
 def macro_bounds(cells: set[tuple[int, int]]) -> tuple[int, int, int, int]:
@@ -169,16 +150,19 @@ def rank_candidate(candidate: base.Candidate, profile_name: str) -> tuple[float,
 
 def make_candidate(
     board: set[tuple[int, int]],
-    selected: ideal.CpsatCandidate,
+    selected_shapes: list[ideal.ShapeRecord],
     args: argparse.Namespace,
-) -> tuple[base.Candidate | None, NearMiss | None, str]:
-    pieces = [set(shape.cells) for shape in selected.shapes]
-    proof_valid, proof_message = ideal.verify_cpsat_proof_cover(board, selected, args)
-    raw_solution_count, raw_solutions, placements_by_piece = ideal.count_solutions_fixed_phase(
+) -> base.Candidate | None:
+    pieces = [set(shape.cells) for shape in selected_shapes]
+    raw_solution_count, raw_solutions, placements_by_piece = base.count_solutions(
         board,
         pieces,
+        allow_rotate=False,
+        allow_mirror=False,
         limit=args.solution_count_limit,
     )
+    if raw_solution_count == 0:
+        return None
 
     effective_solutions = unique_effective_solutions(
         raw_solutions,
@@ -186,6 +170,8 @@ def make_candidate(
         limit=args.solution_count_limit,
     )
     effective_solution_count = len(effective_solutions)
+    if effective_solution_count < args.min_acceptable_solutions:
+        return None
 
     rotated_count, _, _ = base.count_solutions(
         board,
@@ -204,8 +190,14 @@ def make_candidate(
         args.min_acceptable_solutions,
         args.target_solutions,
     )
+    if analysis.quarter_artifact_count != 0:
+        return None
+    if analysis.fragile_artifact_count != 0:
+        return None
+    if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
+        return None
 
-    candidate = base.Candidate(
+    return base.Candidate(
         board=board,
         pieces=pieces,
         solutions=effective_solutions,
@@ -215,79 +207,6 @@ def make_candidate(
         analysis=analysis,
         attempts=0,
     )
-
-    reject_reasons: list[str] = []
-    if not proof_valid:
-        reject_reasons.append(f"proof_invalid:{proof_message}")
-    if raw_solution_count == 0:
-        reject_reasons.append("raw_solution_count=0")
-    if effective_solution_count < args.min_acceptable_solutions:
-        reject_reasons.append(
-            f"effective_solution_count={effective_solution_count}<min={args.min_acceptable_solutions}"
-        )
-    if analysis.quarter_artifact_count != 0:
-        reject_reasons.append(f"quarter_artifact_count={analysis.quarter_artifact_count}")
-    if analysis.fragile_artifact_count != 0:
-        reject_reasons.append(f"fragile_artifact_count={analysis.fragile_artifact_count}")
-    if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
-        reject_reasons.append(f"duplicate_piece_count={analysis.duplicate_piece_count}")
-
-    near_miss = NearMiss(
-        candidate=candidate,
-        reject_reason="; ".join(reject_reasons) if reject_reasons else "",
-        raw_solution_count=raw_solution_count,
-        effective_solution_count=effective_solution_count,
-        proof_layer_count=len(selected.proofs),
-        proof_valid=proof_valid,
-        proof_message=proof_message,
-        profile_name=getattr(args, "profile_name", ""),
-        board_index=getattr(args, "board_index", 0),
-        seed=args.seed,
-        selected_shape_ids=[shape.id for shape in selected.shapes],
-        selected_shape_cells=[sorted(shape.cells) for shape in selected.shapes],
-        board_metrics=small_board_metrics(board),
-        placements_by_piece_counts=[len(placements) for placements in placements_by_piece],
-    )
-
-    if reject_reasons:
-        return None, near_miss, near_miss.reject_reason
-
-    return candidate, None, "accepted"
-
-
-def should_store_near_miss(miss: NearMiss, args: argparse.Namespace) -> bool:
-    if not args.write_near_misses:
-        return False
-    min_solutions = getattr(args, "min_acceptable_solutions", getattr(args, "min_solutions", 2))
-    if miss.proof_valid and miss.effective_solution_count < min_solutions:
-        return True
-    if miss.raw_solution_count >= 1 and miss.effective_solution_count < min_solutions:
-        return True
-    if args.accept_one_solution_nearmiss and miss.effective_solution_count >= 1:
-        return True
-    if miss.candidate.analysis.fragile_artifact_count == 1:
-        return True
-    if "duplicate_piece_count" in miss.reject_reason:
-        return True
-    if miss.board_metrics["fill"] >= 0.88 and miss.effective_solution_count < min_solutions:
-        return True
-    return False
-
-
-def add_near_miss(near_misses: list[NearMiss], miss: NearMiss | None, args: argparse.Namespace) -> None:
-    if miss is None or not should_store_near_miss(miss, args):
-        return
-    near_misses.append(miss)
-    near_misses.sort(
-        key=lambda item: (
-            item.effective_solution_count,
-            item.raw_solution_count,
-            item.board_metrics["fill"],
-            -item.board_metrics["perimeter_extra"],
-        ),
-        reverse=True,
-    )
-    del near_misses[args.near_miss_limit :]
 
 
 def trim_solver_input(
@@ -371,7 +290,6 @@ def search_profile(
     profile: dict[str, object],
     started_at: float,
     results: list[RankedResult],
-    near_misses: list[NearMiss],
 ) -> None:
     args = profile_args(base_args, profile)
     profile_name = str(profile["name"])
@@ -388,8 +306,6 @@ def search_profile(
         board_args = board_limited_args(args, base_args, started_at)
         if board_args is None:
             return
-        board_args.profile_name = profile_name
-        board_args.board_index = board_index
 
         board = ideal.macro_to_small_board(macro_board)
         if args.verbose:
@@ -451,15 +367,9 @@ def search_profile(
         if args.verbose:
             print(f"[{profile_name}] solver returned {len(selected_sets)} set(s)", file=sys.stderr, flush=True)
         for selected in selected_sets:
-            candidate, near_miss, reject_reason = make_candidate(board, selected, board_args)
+            selected_shapes = list(selected.shapes) if hasattr(selected, "shapes") else selected
+            candidate = make_candidate(board, selected_shapes, board_args)
             if candidate is None:
-                add_near_miss(near_misses, near_miss, base_args)
-                if args.verbose:
-                    print(
-                        f"[{profile_name}] rejected: {reject_reason}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
                 continue
 
             rank_score, notes = rank_candidate(candidate, profile_name)
@@ -485,10 +395,12 @@ def search_profile(
 
 
 def effort_caps(effort: str) -> list[int]:
-    if effort == "relaxed":
-        return [1, 8, 12, 16, 16, 10, 14]
     if effort == "fast":
         return [1, 3, 5, 5, 1, 4, 4]
+    if effort == "relaxed":
+        # Candidate-first mode.  Try fewer boards per profile, but make the
+        # profiles much easier: sol2 first, half1 first, clean boards first.
+        return [1, 2, 4, 4, 4, 1, 4, 4]
     if effort == "deep":
         return [1, 20, 30, 30, 1, 30, 30]
     if effort == "extreme":
@@ -499,6 +411,11 @@ def effort_caps(effort: str) -> list[int]:
 def build_profiles(args: argparse.Namespace) -> list[dict[str, object]]:
     caps = effort_caps(args.effort)
     if args.effort == "relaxed":
+        # These profiles match the real puzzle requirements:
+        # - at least 2 effective fixed-orientation solutions
+        # - legal half-cell masks only
+        # - paper fragility remains hard max_fragile=0 below
+        # - board neatness is handled by rank_candidate(), not by rejecting early
         specs = [
             ("6x4_full_half1_sol2", 6, 4, 0, 0, caps[0], 1, 2, args.shape_copies),
             ("5x5_full_half1_sol2", 5, 5, 0, 0, caps[1], 1, 2, args.shape_copies),
@@ -507,16 +424,17 @@ def build_profiles(args: argparse.Namespace) -> list[dict[str, object]]:
             ("6x5_remove5-6_half1_sol2", 6, 5, 5, 6, caps[4], 1, 2, args.shape_copies),
             ("6x4_full_half2_sol2", 6, 4, 0, 0, caps[5], 2, 2, args.shape_copies),
             ("5x5_remove0-3_half2_sol2", 5, 5, 0, 3, caps[6], 2, 2, args.shape_copies),
+            ("6x5_remove5-6_half2_sol2", 6, 5, 5, 6, caps[7], 2, 2, args.shape_copies),
         ]
     else:
         specs = [
-        ("5x5_full_half3_sol4", 5, 5, 0, 0, caps[0], 3, 4, 1),
-        ("5x5_remove0-2_half3_sol4", 5, 5, 0, 2, caps[1], 3, 4, 1),
-        ("5x5_remove0-3_half3_sol3", 5, 5, 0, 3, caps[2], 3, 3, 1),
-        ("5x5_remove0-3_half2_sol2", 5, 5, 0, 3, caps[3], 2, 2, args.shape_copies),
-        ("6x4_full_half2_sol4", 6, 4, 0, 0, caps[4], 2, 4, 1),
-        ("5x5_remove0-3_half2_sol4", 5, 5, 0, 3, caps[5], 2, 4, 1),
-        ("6x5_remove5-6_half2_sol4", 6, 5, 5, 6, caps[6], 2, 4, 1),
+            ("5x5_full_half3_sol4", 5, 5, 0, 0, caps[0], 3, 4, 1),
+            ("5x5_remove0-2_half3_sol4", 5, 5, 0, 2, caps[1], 3, 4, 1),
+            ("5x5_remove0-3_half3_sol3", 5, 5, 0, 3, caps[2], 3, 3, 1),
+            ("5x5_remove0-3_half2_sol2", 5, 5, 0, 3, caps[3], 2, 2, args.shape_copies),
+            ("6x4_full_half2_sol4", 6, 4, 0, 0, caps[4], 2, 4, 1),
+            ("5x5_remove0-3_half2_sol4", 5, 5, 0, 3, caps[5], 2, 4, 1),
+            ("6x5_remove5-6_half2_sol4", 6, 5, 5, 6, caps[6], 2, 4, 1),
         ]
     profiles: list[dict[str, object]] = []
     for (
@@ -583,125 +501,6 @@ def write_ranked_outputs(results: list[RankedResult], output_dir: Path, limit: i
         json.dumps(summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-
-
-def near_miss_to_json(miss: NearMiss, rank: int) -> dict[str, object]:
-    analysis = miss.candidate.analysis
-    return {
-        "rank": rank,
-        "reject_reason": miss.reject_reason,
-        "raw_solution_count": miss.raw_solution_count,
-        "effective_solution_count": miss.effective_solution_count,
-        "proof_layer_count": miss.proof_layer_count,
-        "proof_valid": miss.proof_valid,
-        "proof_message": miss.proof_message,
-        "quarter_artifact_count": analysis.quarter_artifact_count,
-        "fragile_artifact_count": analysis.fragile_artifact_count,
-        "duplicate_piece_count": analysis.duplicate_piece_count,
-        "board_metrics": miss.board_metrics,
-        "profile_name": miss.profile_name,
-        "board_index": miss.board_index,
-        "seed": miss.seed,
-        "selected_shape_ids": miss.selected_shape_ids,
-        "selected_shape_cells": [
-            [list(cell) for cell in cells]
-            for cells in miss.selected_shape_cells
-        ],
-        "placements_by_piece_counts": miss.placements_by_piece_counts,
-        "half_cell_count_per_piece": analysis.half_cell_count_per_piece,
-        "total_half_cell_count": analysis.total_half_cell_count,
-    }
-
-
-def write_near_miss_html(near_misses: list[NearMiss], path: Path) -> None:
-    cards = []
-    for index, miss in enumerate(near_misses, start=1):
-        candidate = miss.candidate
-        metrics = miss.board_metrics
-        solution_svg = (
-            base.svg_solution(candidate.board, candidate.solutions[0])
-            if candidate.solutions
-            else "<div class='empty'>No phase-preserving fixed solution counted.</div>"
-        )
-        cards.append(
-            f"""
-            <article class="card">
-              <div class="badge">NEAR MISS / NOT FINAL</div>
-              <h2>Near Miss {index}</h2>
-              <p class="reason">{escape(miss.reject_reason)}</p>
-              <div class="metrics">
-                <span>raw {miss.raw_solution_count}</span>
-                <span>effective {miss.effective_solution_count}</span>
-                <span>proof layers {miss.proof_layer_count}</span>
-                <span>proof {str(miss.proof_valid).lower()}</span>
-                <span>fragile {candidate.analysis.fragile_artifact_count}</span>
-                <span>quarter {candidate.analysis.quarter_artifact_count}</span>
-                <span>duplicate {candidate.analysis.duplicate_piece_count}</span>
-                <span>fill {metrics['fill']:.2f}</span>
-                <span>perimeter+ {metrics['perimeter_extra']:.0f}</span>
-              </div>
-              <div class="grid">
-                <section><h3>Board</h3>{base.svg_board(candidate.board)}</section>
-                <section><h3>First Counted Solution</h3>{solution_svg}</section>
-                <section class="pieces"><h3>Pieces</h3>{base.svg_pieces(candidate.pieces)}</section>
-              </div>
-              <pre>{escape(miss.proof_message)}</pre>
-            </article>
-            """
-        )
-
-    html = f"""<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Near Miss Gallery</title>
-  <style>
-    body {{ margin: 0; font-family: Arial, sans-serif; background: #f6f4ee; color: #222; }}
-    header {{ padding: 24px 28px; background: #24211d; color: #fff; }}
-    header h1 {{ margin: 0 0 8px; font-size: 24px; }}
-    header p {{ margin: 0; color: #ddd; }}
-    main {{ padding: 20px; display: grid; gap: 18px; }}
-    .card {{ border: 1px solid #d2cab8; background: #fff; border-radius: 8px; padding: 18px; }}
-    .badge {{ display: inline-block; background: #8f1d1d; color: #fff; font-weight: 700; padding: 6px 9px; border-radius: 4px; }}
-    h2 {{ margin: 12px 0 6px; font-size: 20px; }}
-    h3 {{ margin: 0 0 8px; font-size: 15px; }}
-    .reason {{ font-family: Consolas, monospace; background: #f4eee5; padding: 8px; border-radius: 4px; }}
-    .metrics {{ display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 16px; }}
-    .metrics span {{ border: 1px solid #d7d0c2; border-radius: 4px; padding: 5px 8px; background: #fbfaf7; }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; align-items: start; }}
-    svg {{ max-width: 100%; height: auto; border: 1px solid #ddd4c4; }}
-    .pieces {{ grid-column: 1 / -1; }}
-    .empty {{ min-height: 120px; display: grid; place-items: center; border: 1px dashed #cbbf9f; color: #6f624d; }}
-    pre {{ white-space: pre-wrap; background: #28241f; color: #f2eadc; padding: 10px; border-radius: 4px; }}
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Near Miss Gallery</h1>
-    <p>NEAR MISS / NOT FINAL. These candidates failed at least one acceptance rule.</p>
-  </header>
-  <main>
-    {''.join(cards) if cards else '<p>No near misses were captured.</p>'}
-  </main>
-</body>
-</html>
-"""
-    path.write_text(html, encoding="utf-8")
-
-
-def write_near_miss_outputs(near_misses: list[NearMiss], args: argparse.Namespace) -> None:
-    if not args.write_near_misses:
-        return
-    output_dir = args.near_miss_output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-    limited = near_misses[: args.near_miss_limit]
-    payload = [near_miss_to_json(miss, index) for index, miss in enumerate(limited, start=1)]
-    (output_dir / "near_miss.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    write_near_miss_html(limited, output_dir / "index.html")
 
 
 def add_random_fallback_results(
@@ -809,7 +608,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-per-rotational-family", type=int, default=3)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--effort", choices=("relaxed", "fast", "balanced", "deep", "extreme"), default="relaxed")
+    parser.add_argument("--effort", choices=("fast", "balanced", "relaxed", "deep", "extreme"), default="balanced")
     parser.add_argument("--output-dir", type=Path, default=Path("out_ranked"))
     parser.add_argument("--keep-candidates", type=int, default=12)
     parser.add_argument("--keep-searching", action="store_true")
@@ -826,10 +625,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--random-fallback-time-limit", type=float, default=600.0)
     parser.add_argument("--fallback-min-half-cells", type=int, default=1)
     parser.add_argument("--no-random-fallback", action="store_true")
-    parser.add_argument("--write-near-misses", action="store_true")
-    parser.add_argument("--near-miss-limit", type=int, default=20)
-    parser.add_argument("--accept-one-solution-nearmiss", action="store_true")
-    parser.add_argument("--near-miss-output-dir", type=Path, default=Path("out_debug/near_miss"))
     parser.add_argument("--allow-holes", action="store_true")
     parser.add_argument("--no-rotate", action="store_true")
     parser.add_argument("--verbose", action="store_true")
@@ -845,22 +640,17 @@ def main(argv: list[str] | None = None) -> int:
 
     started_at = time.monotonic()
     results: list[RankedResult] = []
-    near_misses: list[NearMiss] = []
     for profile in build_profiles(args):
         if time.monotonic() - started_at > args.total_time_limit:
             break
-        search_profile(args, profile, started_at, results, near_misses)
+        search_profile(args, profile, started_at, results)
         if len(results) >= args.keep_candidates and not args.keep_searching:
             break
 
     add_random_fallback_results(args, started_at, results)
     write_ranked_outputs(results, args.output_dir, args.keep_candidates)
-    write_near_miss_outputs(near_misses, args)
     if not results:
-        if near_misses and args.write_near_misses:
-            print(f"No ranked candidates found. Saved near misses to {args.near_miss_output_dir}", file=sys.stderr)
-        else:
-            print("No ranked candidates found. The output gallery is empty.", file=sys.stderr)
+        print("No ranked candidates found. The output gallery is empty.", file=sys.stderr)
         return 1
     print(f"Saved {min(len(results), args.keep_candidates)} ranked candidate(s) to {args.output_dir}")
     print(f"Best score: {results[0].rank_score:.1f}")
