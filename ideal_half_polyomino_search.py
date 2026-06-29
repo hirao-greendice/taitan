@@ -117,7 +117,48 @@ def macro_perimeter(cells: set[MacroCell]) -> int:
     return sum(1 for cell in cells for neighbor in base.neighbors4(cell) if neighbor not in cells)
 
 
-def board_score(cells: set[MacroCell], base_width: int, base_height: int) -> float:
+def narrow_corridor_penalty(cells: set[MacroCell]) -> int:
+    horizontal: set[MacroCell] = set()
+    vertical: set[MacroCell] = set()
+    for x, y in cells:
+        left = (x - 1, y) in cells
+        right = (x + 1, y) in cells
+        up = (x, y - 1) in cells
+        down = (x, y + 1) in cells
+        if left and right and not up and not down:
+            horizontal.add((x, y))
+        if up and down and not left and not right:
+            vertical.add((x, y))
+
+    penalty = 0
+    for run_cells, axis in ((horizontal, "x"), (vertical, "y")):
+        remaining = set(run_cells)
+        while remaining:
+            start = remaining.pop()
+            stack = [start]
+            run = {start}
+            while stack:
+                x, y = stack.pop()
+                neighbors = (
+                    ((x - 1, y), (x + 1, y))
+                    if axis == "x"
+                    else ((x, y - 1), (x, y + 1))
+                )
+                for neighbor in neighbors:
+                    if neighbor in remaining:
+                        remaining.remove(neighbor)
+                        run.add(neighbor)
+                        stack.append(neighbor)
+            penalty += max(0, len(run) - 2)
+    return penalty
+
+
+def board_score(
+    cells: set[MacroCell],
+    base_width: int,
+    base_height: int,
+    roughness: str = "balanced",
+) -> float:
     min_x = min(x for x, _ in cells)
     max_x = max(x for x, _ in cells)
     min_y = min(y for _, y in cells)
@@ -129,7 +170,23 @@ def board_score(cells: set[MacroCell], base_width: int, base_height: int) -> flo
     perimeter = macro_perimeter(cells)
     ideal_perimeter = 2 * (bbox_w + bbox_h)
     aspect = max(bbox_w, bbox_h) / max(1, min(bbox_w, bbox_h))
-    return fill * 1000 - removed * 25 - (perimeter - ideal_perimeter) * 20 - max(0, aspect - 1.8) * 100
+    weights = {
+        "neat": (1100.0, 25.0, 24.0, 1.65, 130.0, 12.0),
+        "balanced": (1000.0, 25.0, 20.0, 1.8, 100.0, 8.0),
+        "rough": (420.0, 12.0, 6.0, 2.25, 35.0, 4.0),
+        "wild": (180.0, 6.0, 2.0, 3.0, 15.0, 2.0),
+    }
+    fill_weight, remove_weight, perimeter_weight, aspect_limit, aspect_weight, corridor_weight = weights.get(
+        roughness,
+        weights["balanced"],
+    )
+    return (
+        fill * fill_weight
+        - removed * remove_weight
+        - max(0, perimeter - ideal_perimeter) * perimeter_weight
+        - max(0.0, aspect - aspect_limit) * aspect_weight
+        - narrow_corridor_penalty(cells) * corridor_weight
+    )
 
 
 def boundary_macro_cells(cells: set[MacroCell]) -> list[MacroCell]:
@@ -145,6 +202,7 @@ def generate_near_rect_macro_boards(args: argparse.Namespace) -> list[set[MacroC
     candidates: list[set[MacroCell]] = []
     seen: set[tuple[MacroCell, ...]] = set()
     boundary = boundary_macro_cells(base_board)
+    roughness = getattr(args, "board_roughness", "balanced")
 
     for remove_count in range(args.board_remove_min, args.board_remove_max + 1):
         if remove_count == 0:
@@ -174,7 +232,7 @@ def generate_near_rect_macro_boards(args: argparse.Namespace) -> list[set[MacroC
             candidates.append(board)
 
     candidates.sort(
-        key=lambda board: board_score(board, args.board_w_macro, args.board_h_macro),
+        key=lambda board: board_score(board, args.board_w_macro, args.board_h_macro, roughness),
         reverse=True,
     )
     return candidates[: args.max_board_candidates]

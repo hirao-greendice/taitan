@@ -1,0 +1,36 @@
+[
+  {
+    "rank": 1,
+    "score": 785.0,
+    "profile": "6x4_full_half1_sol2",
+    "board_index": 1,
+    "board_macro_area": 24,
+    "board_bbox": [
+      6,
+      4
+    ],
+    "board_fill": 1.0,
+    "board_extra_perimeter": 0,
+    "solution_count_effective_fixed": 2,
+    "rotated_solution_count_raw": 0,
+    "half_cell_count_per_piece": [
+      4,
+      2,
+      2,
+      2,
+      2,
+      4
+    ],
+    "total_half_cell_count": 16,
+    "quarter_artifact_count": 0,
+    "fragile_artifact_count": 0,
+    "duplicate_piece_count": 2,
+    "notes": [
+      "effective 2 fixed solutions",
+      "duplicate pieces 2",
+      "board 6x4, fill=1.00, extra_perimeter=0",
+      "half cells total 16",
+      "6x4_full_half1_sol2"
+    ]
+  }
+]

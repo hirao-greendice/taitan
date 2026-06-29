@@ -30,6 +30,15 @@ import generate_half_polyomino as base
 import ideal_half_polyomino_search as ideal
 
 
+BOARD_ROUGHNESS_CHOICES = ("neat", "balanced", "rough", "wild")
+BOARD_RANK_WEIGHTS = {
+    "neat": (620.0, 42.0, 1.45, 220.0, 10.0),
+    "balanced": (540.0, 38.0, 1.55, 190.0, 8.0),
+    "rough": (260.0, 14.0, 2.05, 60.0, 5.0),
+    "wild": (120.0, 6.0, 2.6, 25.0, 3.0),
+}
+
+
 @dataclass
 class RankedResult:
     candidate: base.Candidate
@@ -74,6 +83,7 @@ def small_board_metrics(board: set[tuple[int, int]]) -> dict[str, float]:
     perimeter = ideal.macro_perimeter(macro)
     ideal_perimeter = 2 * (bbox_w + bbox_h)
     aspect = max(bbox_w, bbox_h) / max(1, min(bbox_w, bbox_h))
+    narrow_corridor = ideal.narrow_corridor_penalty(macro)
     return {
         "macro_area": len(macro),
         "bbox_w": bbox_w,
@@ -81,6 +91,7 @@ def small_board_metrics(board: set[tuple[int, int]]) -> dict[str, float]:
         "fill": fill,
         "perimeter_extra": max(0, perimeter - ideal_perimeter),
         "aspect": aspect,
+        "narrow_corridor": narrow_corridor,
     }
 
 
@@ -102,7 +113,12 @@ def unique_effective_solutions(
     return unique
 
 
-def rank_candidate(candidate: base.Candidate, profile_name: str) -> tuple[float, list[str]]:
+def rank_candidate(
+    candidate: base.Candidate,
+    profile_name: str,
+    board_roughness: str = "balanced",
+    profile_board_size: tuple[int, int] | None = None,
+) -> tuple[float, list[str]]:
     analysis = candidate.analysis
     metrics = small_board_metrics(candidate.board)
     pieces = candidate.pieces
@@ -132,9 +148,14 @@ def rank_candidate(candidate: base.Candidate, profile_name: str) -> tuple[float,
         score -= 500
         notes.append("too few fixed solutions")
 
-    score += metrics["fill"] * 540
-    score -= metrics["perimeter_extra"] * 38
-    score -= max(0.0, metrics["aspect"] - 1.55) * 190
+    fill_weight, perimeter_weight, aspect_limit, aspect_weight, corridor_weight = BOARD_RANK_WEIGHTS.get(
+        board_roughness,
+        BOARD_RANK_WEIGHTS["balanced"],
+    )
+    score += metrics["fill"] * fill_weight
+    score -= metrics["perimeter_extra"] * perimeter_weight
+    score -= max(0.0, metrics["aspect"] - aspect_limit) * aspect_weight
+    score -= metrics["narrow_corridor"] * corridor_weight
     score -= abs(metrics["macro_area"] - 24) * 8
 
     total_half = sum(half_counts)
@@ -158,9 +179,17 @@ def rank_candidate(candidate: base.Candidate, profile_name: str) -> tuple[float,
     else:
         score += min(avg_candidates, 18) * 4
 
+    if profile_board_size is None:
+        note_w = int(metrics["bbox_w"])
+        note_h = int(metrics["bbox_h"])
+        remove_count = int(metrics["bbox_w"] * metrics["bbox_h"] - metrics["macro_area"])
+    else:
+        note_w, note_h = profile_board_size
+        remove_count = int(note_w * note_h - metrics["macro_area"])
     notes.append(
-        f"board {int(metrics['bbox_w'])}x{int(metrics['bbox_h'])}, "
-        f"fill={metrics['fill']:.2f}, extra_perimeter={int(metrics['perimeter_extra'])}"
+        f"board {note_w}x{note_h} remove={remove_count} roughness={board_roughness} "
+        f"perimeter_extra={int(metrics['perimeter_extra'])} fill={metrics['fill']:.2f} "
+        f"narrow_corridor={int(metrics['narrow_corridor'])}"
     )
     notes.append(f"half cells total {total_half}")
     notes.append(profile_name)
@@ -462,7 +491,12 @@ def search_profile(
                     )
                 continue
 
-            rank_score, notes = rank_candidate(candidate, profile_name)
+            rank_score, notes = rank_candidate(
+                candidate,
+                profile_name,
+                getattr(board_args, "board_roughness", "balanced"),
+                (int(board_args.board_w_macro), int(board_args.board_h_macro)),
+            )
             results.append(
                 RankedResult(
                     candidate=candidate,
@@ -496,28 +530,71 @@ def effort_caps(effort: str) -> list[int]:
     return [1, 8, 12, 12, 1, 12, 12]
 
 
+def rough_effort_caps(effort: str) -> list[int]:
+    if effort == "relaxed":
+        return [8, 8, 8, 10, 10, 10]
+    if effort == "fast":
+        return [3, 3, 3, 3, 3, 3]
+    if effort == "deep":
+        return [30, 30, 30, 36, 36, 36]
+    if effort == "extreme":
+        return [90, 90, 90, 120, 120, 120]
+    return [12, 12, 12, 16, 16, 16]
+
+
+def rough_profile_roughness(args: argparse.Namespace) -> str:
+    return "wild" if args.board_roughness == "wild" else "rough"
+
+
+def neat_profile_roughness(args: argparse.Namespace) -> str:
+    return "neat" if args.board_roughness == "neat" else "balanced"
+
+
 def build_profiles(args: argparse.Namespace) -> list[dict[str, object]]:
     caps = effort_caps(args.effort)
+    rough_caps = rough_effort_caps(args.effort)
     if args.effort == "relaxed":
-        specs = [
-            ("6x4_full_half1_sol2", 6, 4, 0, 0, caps[0], 1, 2, args.shape_copies),
-            ("5x5_full_half1_sol2", 5, 5, 0, 0, caps[1], 1, 2, args.shape_copies),
-            ("5x5_remove0-2_half1_sol2", 5, 5, 0, 2, caps[2], 1, 2, args.shape_copies),
-            ("5x5_remove0-3_half1_sol2", 5, 5, 0, 3, caps[3], 1, 2, args.shape_copies),
-            ("6x5_remove5-6_half1_sol2", 6, 5, 5, 6, caps[4], 1, 2, args.shape_copies),
-            ("6x4_full_half2_sol2", 6, 4, 0, 0, caps[5], 2, 2, args.shape_copies),
-            ("5x5_remove0-3_half2_sol2", 5, 5, 0, 3, caps[6], 2, 2, args.shape_copies),
+        neat_specs = [
+            ("6x4_full_half1_sol2", 6, 4, 0, 0, caps[0], 1, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("5x5_full_half1_sol2", 5, 5, 0, 0, caps[1], 1, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("5x5_remove0-2_half1_sol2", 5, 5, 0, 2, caps[2], 1, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half1_sol2", 5, 5, 0, 3, caps[3], 1, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("6x5_remove5-6_half1_sol2", 6, 5, 5, 6, caps[4], 1, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("6x4_full_half2_sol2", 6, 4, 0, 0, caps[5], 2, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half2_sol2", 5, 5, 0, 3, caps[6], 2, 2, args.shape_copies, neat_profile_roughness(args)),
         ]
     else:
-        specs = [
-        ("5x5_full_half3_sol4", 5, 5, 0, 0, caps[0], 3, 4, 1),
-        ("5x5_remove0-2_half3_sol4", 5, 5, 0, 2, caps[1], 3, 4, 1),
-        ("5x5_remove0-3_half3_sol3", 5, 5, 0, 3, caps[2], 3, 3, 1),
-        ("5x5_remove0-3_half2_sol2", 5, 5, 0, 3, caps[3], 2, 2, args.shape_copies),
-        ("6x4_full_half2_sol4", 6, 4, 0, 0, caps[4], 2, 4, 1),
-        ("5x5_remove0-3_half2_sol4", 5, 5, 0, 3, caps[5], 2, 4, 1),
-        ("6x5_remove5-6_half2_sol4", 6, 5, 5, 6, caps[6], 2, 4, 1),
+        neat_specs = [
+            ("5x5_full_half3_sol4", 5, 5, 0, 0, caps[0], 3, 4, 1, neat_profile_roughness(args)),
+            ("5x5_remove0-2_half3_sol4", 5, 5, 0, 2, caps[1], 3, 4, 1, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half3_sol3", 5, 5, 0, 3, caps[2], 3, 3, 1, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half2_sol2", 5, 5, 0, 3, caps[3], 2, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("6x4_full_half2_sol4", 6, 4, 0, 0, caps[4], 2, 4, 1, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half2_sol4", 5, 5, 0, 3, caps[5], 2, 4, 1, neat_profile_roughness(args)),
+            ("6x5_remove5-6_half2_sol4", 6, 5, 5, 6, caps[6], 2, 4, 1, neat_profile_roughness(args)),
         ]
+
+    rough_specs = [
+        ("5x6_remove5-8_half1_sol2", 5, 6, 5, 8, rough_caps[0], 1, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("6x5_remove6-8_half1_sol2", 6, 5, 6, 8, rough_caps[1], 1, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("7x4_remove4-6_half1_sol2", 7, 4, 4, 6, rough_caps[2], 1, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("7x5_remove10-12_half1_sol2", 7, 5, 10, 12, rough_caps[3], 1, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("6x6_remove10-12_half1_sol2", 6, 6, 10, 12, rough_caps[4], 1, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("8x4_remove7-9_half1_sol2", 8, 4, 7, 9, rough_caps[5], 1, 2, args.shape_copies, rough_profile_roughness(args)),
+    ]
+
+    if args.board_roughness == "neat":
+        specs = neat_specs
+    elif args.board_roughness in ("rough", "wild") and args.effort == "relaxed":
+        fallback_name = "5x5_remove0-3_half1_sol2"
+        specs = rough_specs
+        specs += [spec for spec in neat_specs if spec[0] == fallback_name]
+        specs += [spec for spec in neat_specs if spec[0] != fallback_name]
+    elif args.board_roughness in ("rough", "wild"):
+        specs = rough_specs + neat_specs
+    else:
+        specs = neat_specs + rough_specs
+
     profiles: list[dict[str, object]] = []
     for (
         name,
@@ -529,6 +606,7 @@ def build_profiles(args: argparse.Namespace) -> list[dict[str, object]]:
         min_half,
         required_solutions,
         shape_copies,
+        board_roughness,
     ) in specs:
         profiles.append(
             {
@@ -537,6 +615,7 @@ def build_profiles(args: argparse.Namespace) -> list[dict[str, object]]:
                 "board_h_macro": board_h,
                 "board_remove_min": remove_min,
                 "board_remove_max": remove_max,
+                "board_roughness": board_roughness,
                 "max_board_candidates": max_boards,
                 "min_half_cells": min_half,
                 "required_solutions": required_solutions,
@@ -780,7 +859,7 @@ def add_random_fallback_results(
         candidate.solutions = effective_solutions
         candidate.solution_count = len(effective_solutions)
         candidate.analysis = analysis
-        rank_score, notes = rank_candidate(candidate, "random_fallback")
+        rank_score, notes = rank_candidate(candidate, "random_fallback", args.board_roughness)
         results.append(
             RankedResult(
                 candidate=candidate,
@@ -810,6 +889,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--effort", choices=("relaxed", "fast", "balanced", "deep", "extreme"), default="relaxed")
+    parser.add_argument("--board-roughness", choices=BOARD_ROUGHNESS_CHOICES, default="balanced")
     parser.add_argument("--output-dir", type=Path, default=Path("out_ranked"))
     parser.add_argument("--keep-candidates", type=int, default=12)
     parser.add_argument("--keep-searching", action="store_true")
