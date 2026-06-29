@@ -300,8 +300,31 @@ def count_fragile_artifacts(cells: set[Cell] | frozenset[Cell]) -> int:
 
 
 def duplicate_piece_count(pieces: list[set[Cell]]) -> int:
-    signatures = [tuple(sorted(piece)) for piece in pieces]
+    signatures = [canonical_signature(piece) for piece in pieces]
     return len(signatures) - len(set(signatures))
+
+
+def solution_identity_signature(
+    solution: dict[int, frozenset[Cell]],
+    pieces: list[set[Cell]],
+) -> tuple[tuple[tuple[Cell, ...], tuple[tuple[Cell, ...], ...]], ...]:
+    """Canonicalize a solution modulo swaps of identical physical cuts."""
+    groups: dict[tuple[Cell, ...], list[tuple[Cell, ...]]] = defaultdict(list)
+    for piece_index, cells in solution.items():
+        piece_sig = canonical_signature(pieces[piece_index])
+        groups[piece_sig].append(tuple(sorted(cells)))
+    return tuple(
+        (piece_sig, tuple(sorted(placements)))
+        for piece_sig, placements in sorted(groups.items())
+    )
+
+
+def count_effective_solutions(
+    solutions: list[dict[int, frozenset[Cell]]],
+    pieces: list[set[Cell]],
+) -> int:
+    """Count solutions after ignoring pure swaps of identical pieces."""
+    return len({solution_identity_signature(solution, pieces) for solution in solutions})
 
 
 def normalize_cells(cells: set[Cell] | frozenset[Cell]) -> set[Cell]:
@@ -804,7 +827,7 @@ def count_solutions(
         if not remaining:
             if occupied == board_mask:
                 count += 1
-                if len(solutions) < min(limit, 16):
+                if len(solutions) < limit:
                     solutions.append({p: placement.cells for p, placement in chosen.items()})
             return
 

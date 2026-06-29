@@ -1,43 +1,47 @@
-# Colab / long-running ideal search
+# Colab / long-running ranked search
 
-This search is intentionally heavy.  It does **not** use identical-piece swaps
-unless you explicitly use the older generator with `--allow-identical-pieces`.
+This search is intentionally heavy.  It ranks candidates automatically instead
+of asking you to manually change rules after every failed run.
 
 ## What is searched
 
-Default ideal constraints:
+Hard constraints:
 
 - 6 pieces
-- Full rectangular board: ordinary `6 x 4` cells = small `12 x 8` cells
+- Paper fragility must be 0
+- No 1/4, 3/4, diagonal-half, or L masks
+- Identical physical cuts are allowed
+- Pure swaps of identical pieces do not count as distinct solutions
 - Piece areas may vary from 14 to 18 small cells
   - 14 = 3.5 ordinary cells
   - 16 = 4 ordinary cells
   - 18 = 4.5 ordinary cells
 - Fixed-orientation solutions
-- At least 4 distinct complete tilings
-- No identical physical cuts, including rotations
-- Legal half-cell masks only
-- Minimum half-cell masks per piece: default 3
-- Paper fragility count: default 0
+
+Ranking preferences:
+
+- At least 4 fixed-orientation solutions, but 2 or 3 can still be ranked lower
+- Board close to a rectangle, with low perimeter noise
+- More legal half-cell masks
+- Balanced piece areas
+- Fewer identical pieces
 
 ## Run locally
 
 ```bash
 python -m pip install -r requirements.txt
-python ideal_half_polyomino_search.py ^
-  --library-target 5000 ^
-  --library-time-limit 1800 ^
-  --solve-time-limit 3600 ^
-  --workers 8 ^
-  --output-dir out_ideal ^
-  --verbose
 ```
 
-PowerShell one-line version:
+Balanced PowerShell run:
 
 ```powershell
-python -m pip install -r requirements.txt
-python ideal_half_polyomino_search.py --library-target 5000 --library-time-limit 1800 --solve-time-limit 3600 --workers 8 --output-dir out_ideal --verbose
+python ranked_ideal_search.py --effort balanced --total-time-limit 7200 --workers 8 --output-dir out_ranked --verbose
+```
+
+Deep local run for a gaming PC:
+
+```powershell
+python ranked_ideal_search.py --effort deep --library-target 6000 --library-time-limit 600 --solve-time-limit 600 --single-cover-solve-time-limit 120 --total-time-limit 14400 --solver-candidates-per-board 6 --max-solver-shapes 4500 --max-solver-placements 45000 --keep-candidates 20 --keep-searching --workers 8 --output-dir out_ranked_deep --verbose
 ```
 
 ## Run in Google Colab
@@ -57,6 +61,7 @@ If you have not pushed it, upload these files to Colab first:
 
 - `generate_half_polyomino.py`
 - `ideal_half_polyomino_search.py`
+- `ranked_ideal_search.py`
 - `requirements.txt`
 
 Then:
@@ -74,41 +79,54 @@ Then:
 ### 3. Run a serious search
 
 ```python
-!python ideal_half_polyomino_search.py \
-  --library-target 12000 \
-  --library-time-limit 3600 \
-  --solve-time-limit 7200 \
-  --workers 8 \
-  --output-dir out_ideal \
+!python ranked_ideal_search.py \
+  --effort balanced \
+  --total-time-limit 7200 \
+  --workers 2 \
+  --keep-candidates 12 \
+  --output-dir out_ranked \
+  --verbose
+```
+
+Longer Colab run:
+
+```python
+!python ranked_ideal_search.py \
+  --effort deep \
+  --library-target 5000 \
+  --library-time-limit 600 \
+  --solve-time-limit 600 \
+  --single-cover-solve-time-limit 120 \
+  --total-time-limit 14400 \
+  --solver-candidates-per-board 6 \
+  --max-solver-shapes 4000 \
+  --max-solver-placements 40000 \
+  --keep-candidates 20 \
+  --keep-searching \
+  --workers 2 \
+  --output-dir out_ranked_deep \
   --verbose
 ```
 
 ### 4. Download results
 
 ```python
-!zip -r out_ideal.zip out_ideal
+!zip -r out_ranked.zip out_ranked
 from google.colab import files
-files.download("out_ideal.zip")
+files.download("out_ranked.zip")
 ```
 
-Open `out_ideal/index.html` after downloading.
+Open `out_ranked/index.html` after downloading.
+
+Use `--solver-log` only when you want the very noisy OR-Tools internal log.
 
 ## Relaxation knobs
 
-Use these only if the strict search finds no candidate after a long run.
+The ranked search already tries these automatically where appropriate:
 
-```bash
---min-half-cells 2
---max-fragile 1
---board-w-macro 7 --board-h-macro 4
---required-solutions 3
-```
+- min half-cell count 3 and 2
+- required solutions 4, 3, and 2
+- 5x5 near-rectangle boards
+- 6x5 near-rectangle boards
 
-Recommended relaxation order:
-
-1. Increase `--library-target`, `--library-time-limit`, and `--solve-time-limit`.
-2. Try `--min-half-cells 2`.
-3. Try `--max-fragile 1`.
-4. Try a slightly larger board such as `7 x 4` ordinary cells.
-
-Do **not** use identical pieces for final puzzle candidates.
+It never relaxes paper fragility.

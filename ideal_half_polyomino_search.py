@@ -26,12 +26,14 @@ Example:
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import random
 import sys
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 try:
@@ -95,6 +97,77 @@ def macro_rectangle(width_macro: int, height_macro: int) -> set[MacroCell]:
     return {(x, y) for y in range(height_macro) for x in range(width_macro)}
 
 
+def macro_to_small_board(cells: set[MacroCell]) -> set[Cell]:
+    return base.macro_to_full_small(cells)
+
+
+def macro_perimeter(cells: set[MacroCell]) -> int:
+    return sum(1 for cell in cells for neighbor in base.neighbors4(cell) if neighbor not in cells)
+
+
+def board_score(cells: set[MacroCell], base_width: int, base_height: int) -> float:
+    min_x = min(x for x, _ in cells)
+    max_x = max(x for x, _ in cells)
+    min_y = min(y for _, y in cells)
+    max_y = max(y for _, y in cells)
+    bbox_w = max_x - min_x + 1
+    bbox_h = max_y - min_y + 1
+    fill = len(cells) / (bbox_w * bbox_h)
+    removed = base_width * base_height - len(cells)
+    perimeter = macro_perimeter(cells)
+    ideal_perimeter = 2 * (bbox_w + bbox_h)
+    aspect = max(bbox_w, bbox_h) / max(1, min(bbox_w, bbox_h))
+    return fill * 1000 - removed * 25 - (perimeter - ideal_perimeter) * 20 - max(0, aspect - 1.8) * 100
+
+
+def boundary_macro_cells(cells: set[MacroCell]) -> list[MacroCell]:
+    return sorted(
+        cell
+        for cell in cells
+        if any(neighbor not in cells for neighbor in base.neighbors4(cell))
+    )
+
+
+def generate_near_rect_macro_boards(args: argparse.Namespace) -> list[set[MacroCell]]:
+    base_board = macro_rectangle(args.board_w_macro, args.board_h_macro)
+    candidates: list[set[MacroCell]] = []
+    seen: set[tuple[MacroCell, ...]] = set()
+    boundary = boundary_macro_cells(base_board)
+
+    for remove_count in range(args.board_remove_min, args.board_remove_max + 1):
+        if remove_count == 0:
+            boards = [set(base_board)]
+        else:
+            combos = itertools.combinations(boundary, remove_count)
+            boards = []
+            for combo_index, combo in enumerate(combos):
+                if combo_index >= args.max_board_candidates_per_remove:
+                    break
+                boards.append(base_board - set(combo))
+
+        for board in boards:
+            if len(board) == 0:
+                continue
+            signature = tuple(sorted(board))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            if not base.is_macro_connected(board):
+                continue
+            if not args.allow_holes and base.has_macro_hole(board):
+                continue
+            small_area = len(board) * 4
+            if not (args.pieces * args.min_piece_area <= small_area <= args.pieces * args.max_piece_area):
+                continue
+            candidates.append(board)
+
+    candidates.sort(
+        key=lambda board: board_score(board, args.board_w_macro, args.board_h_macro),
+        reverse=True,
+    )
+    return candidates[: args.max_board_candidates]
+
+
 def complement_half(mask: int) -> int:
     if mask == base.MASK_TOP:
         return base.MASK_BOTTOM
@@ -135,14 +208,121 @@ def choose_area_pattern(
     raise RuntimeError("could not create area pattern")
 
 
+def choose_macro_region_sizes(
+    rng: random.Random,
+    board_area_macro: int,
+    piece_count: int,
+) -> list[int] | None:
+    """Choose connected macro-region sizes before half-cell transfers.
+
+    Region sizes of 3, 4, and 5 ordinary cells are useful because half transfers
+    can turn them into 14..18 small-cell pieces.  This also supports boards such
+    as 5x5 ordinary cells, whose area is not divisible by 4.
+    """
+    for _ in range(10_000):
+        sizes = [rng.choice((3, 4, 5)) for _ in range(piece_count - 1)]
+        last = board_area_macro - sum(sizes)
+        if last in (3, 4, 5):
+            sizes.append(last)
+            rng.shuffle(sizes)
+            return sizes
+    return None
+
+
+@lru_cache(maxsize=200_000)
+def _connected_subsets_containing_cached(
+    remaining_signature: tuple[MacroCell, ...],
+    anchor: MacroCell,
+    size: int,
+    limit: int,
+) -> tuple[tuple[MacroCell, ...], ...]:
+    remaining = set(remaining_signature)
+    subsets: set[frozenset[MacroCell]] = set()
+    stack: list[tuple[frozenset[MacroCell], frozenset[MacroCell]]] = [
+        (frozenset({anchor}), frozenset(n for n in base.neighbors4(anchor) if n in remaining))
+    ]
+    while stack and len(subsets) < limit:
+        shape, frontier = stack.pop()
+        if len(shape) == size:
+            subsets.add(shape)
+            continue
+        for cell in list(frontier):
+            new_shape = set(shape)
+            new_shape.add(cell)
+            new_frontier = set(frontier)
+            new_frontier.remove(cell)
+            for neighbor in base.neighbors4(cell):
+                if neighbor in remaining and neighbor not in new_shape:
+                    new_frontier.add(neighbor)
+            stack.append((frozenset(new_shape), frozenset(new_frontier)))
+    return tuple(tuple(sorted(subset)) for subset in subsets)
+
+
+def connected_subsets_containing(
+    remaining: set[MacroCell],
+    anchor: MacroCell,
+    size: int,
+    limit: int = 400,
+) -> list[frozenset[MacroCell]]:
+    return [
+        frozenset(subset)
+        for subset in _connected_subsets_containing_cached(
+            tuple(sorted(remaining)), anchor, size, limit
+        )
+    ]
+
+
+def partition_macro_board(
+    rng: random.Random,
+    board: set[MacroCell],
+    piece_count: int,
+    max_nodes: int = 20_000,
+) -> list[set[MacroCell]] | None:
+    sizes = choose_macro_region_sizes(rng, len(board), piece_count)
+    if sizes is None:
+        return None
+    sizes.sort(reverse=True)
+    nodes = 0
+
+    def search(
+        remaining: frozenset[MacroCell],
+        remaining_sizes: tuple[int, ...],
+    ) -> list[set[MacroCell]] | None:
+        nonlocal nodes
+        nodes += 1
+        if nodes > max_nodes:
+            return None
+        if not remaining_sizes:
+            return [] if not remaining else None
+        if sum(remaining_sizes) != len(remaining):
+            return None
+
+        size = remaining_sizes[0]
+        anchor = min(remaining)
+        options = connected_subsets_containing(set(remaining), anchor, size)
+        rng.shuffle(options)
+        for subset in options:
+            rest = frozenset(set(remaining) - set(subset))
+            if rest and not base.is_macro_connected(set(rest)):
+                # A disconnected remainder can never be fully covered by
+                # connected regions without crossing occupied cells.
+                continue
+            result = search(rest, remaining_sizes[1:])
+            if result is not None:
+                return [set(subset)] + result
+        return None
+
+    return search(frozenset(board), tuple(sizes))
+
+
 def random_tetromino_partition(
     rng: random.Random,
-    width_macro: int,
-    height_macro: int,
+    board: set[MacroCell],
     piece_count: int,
 ) -> list[set[MacroCell]] | None:
-    board = macro_rectangle(width_macro, height_macro)
-    return base.partition_into_tetrominoes(board, piece_count, rng, max_nodes=100_000)
+    if len(board) == piece_count * 4:
+        return base.partition_into_tetrominoes(board, piece_count, rng, max_nodes=100_000)
+    return partition_macro_board(rng, board, piece_count)
 
 
 def boundary_edges(regions: list[set[MacroCell]]) -> list[tuple[MacroCell, MacroCell, int, int, str]]:
@@ -170,12 +350,17 @@ def make_partition_shapes(
     max_fragile: int,
     transfer_attempts: int,
 ) -> list[set[Cell]] | None:
+    edges = boundary_edges(regions)
+    if not edges:
+        return None
+    valid_pieces: list[set[Cell]] = []
+    seen: set[tuple[Cell, ...]] = set()
     for _ in range(transfer_attempts):
         masks_by_piece = [{cell: base.MASK_FULL for cell in region} for region in regions]
         areas = [len(region) * 4 for region in regions]
         split_cells: set[MacroCell] = set()
-        edges = boundary_edges(regions)
-        rng.shuffle(edges)
+        shuffled_edges = edges[:]
+        rng.shuffle(shuffled_edges)
 
         # Split many boundary ordinary-cells.  Each split transfers one half-cell
         # from the original owner to the neighboring piece.  Areas may end at
@@ -184,7 +369,7 @@ def make_partition_shapes(
             max(3, min_half_cells * len(regions) // 2),
             max(3, len(edges)),
         )
-        for c, d, p, q, direction in edges:
+        for c, d, p, q, direction in shuffled_edges:
             if len(split_cells) >= split_budget:
                 break
             options = [(c, p, q, True), (d, q, p, False)]
@@ -205,12 +390,17 @@ def make_partition_shapes(
                 break
 
         pieces = [align_cells(base.masks_to_cells(masks)) for masks in masks_by_piece]
-        if all(
-            validate_ideal_piece(piece, min_area, max_area, min_half_cells, max_fragile)
-            for piece in pieces
-        ):
-            return pieces
-    return None
+        for piece in pieces:
+            if not validate_ideal_piece(piece, min_area, max_area, min_half_cells, max_fragile):
+                continue
+            signature = exact_signature(piece)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            valid_pieces.append(piece)
+            if len(valid_pieces) >= len(regions):
+                return valid_pieces
+    return valid_pieces or None
 
 
 def validate_ideal_piece(
@@ -237,7 +427,7 @@ def validate_ideal_piece(
     return True
 
 
-def build_shape_library(args: argparse.Namespace) -> list[ShapeRecord]:
+def build_shape_library(args: argparse.Namespace, macro_board: set[MacroCell]) -> list[ShapeRecord]:
     rng = random.Random(args.seed)
     records: list[ShapeRecord] = []
     exact_seen: set[tuple[Cell, ...]] = set()
@@ -251,7 +441,7 @@ def build_shape_library(args: argparse.Namespace) -> list[ShapeRecord]:
             break
 
         regions = random_tetromino_partition(
-            rng, args.board_w_macro, args.board_h_macro, args.pieces
+            rng, macro_board, args.pieces
         )
         if regions is None:
             continue
@@ -299,6 +489,20 @@ def build_shape_library(args: argparse.Namespace) -> list[ShapeRecord]:
                 flush=True,
             )
 
+    if getattr(args, "allow_identical_pieces", False) and getattr(args, "shape_copies", 1) > 1:
+        originals = records[:]
+        for _ in range(1, args.shape_copies):
+            for record in originals:
+                records.append(
+                    ShapeRecord(
+                        id=len(records),
+                        cells=record.cells,
+                        area=record.area,
+                        half_count=record.half_count,
+                        fragile_count=record.fragile_count,
+                        rotational_signature=record.rotational_signature,
+                    )
+                )
     return records
 
 
@@ -331,12 +535,12 @@ def enumerate_shape_placements(
     return placements
 
 
-def solve_with_cpsat(
+def _build_cpsat_model(
     board: set[Cell],
     shapes: list[ShapeRecord],
     placements: list[PlacementRecord],
     args: argparse.Namespace,
-) -> list[ShapeRecord] | None:
+) -> tuple[cp_model.CpModel, dict[int, cp_model.IntVar]] | None:
     if cp_model is None:
         raise SystemExit(
             "OR-Tools is not installed. Run: python -m pip install -r requirements.txt"
@@ -360,14 +564,18 @@ def solve_with_cpsat(
             placements_by_cell[cell].append(placement)
 
     model.Add(sum(y.values()) == args.pieces)
+    model.Add(sum(shape.area * y[shape.id] for shape in shapes) == len(board))
 
-    # Do not select two shapes that are the same physical cut up to rotation.
-    by_rotational: defaultdict[tuple[Cell, ...], list[int]] = defaultdict(list)
-    for shape in shapes:
-        by_rotational[shape.rotational_signature].append(shape.id)
-    for ids in by_rotational.values():
-        if len(ids) > 1:
-            model.Add(sum(y[i] for i in ids) <= 1)
+    # Usually we avoid selecting two shapes that are the same physical cut up to
+    # rotation.  Ranked search may allow them, but downstream verification counts
+    # solutions modulo pure identical-piece swaps.
+    if not getattr(args, "allow_identical_pieces", False):
+        by_rotational: defaultdict[tuple[Cell, ...], list[int]] = defaultdict(list)
+        for shape in shapes:
+            by_rotational[shape.rotational_signature].append(shape.id)
+        for ids in by_rotational.values():
+            if len(ids) > 1:
+                model.Add(sum(y[i] for i in ids) <= 1)
 
     for layer in range(k_solutions):
         for cell in board:
@@ -399,20 +607,64 @@ def solve_with_cpsat(
         sum(shape.half_count * y[shape.id] for shape in shapes)
         - sum(shape.fragile_count * 20 * y[shape.id] for shape in shapes)
     )
+    return model, y
 
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = args.solve_time_limit
-    solver.parameters.num_search_workers = args.workers
-    solver.parameters.random_seed = args.seed or 1
-    solver.parameters.log_search_progress = args.verbose
 
-    status = solver.Solve(model)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+def solve_with_cpsat_candidates(
+    board: set[Cell],
+    shapes: list[ShapeRecord],
+    placements: list[PlacementRecord],
+    args: argparse.Namespace,
+    max_candidates: int = 1,
+) -> list[list[ShapeRecord]]:
+    built = _build_cpsat_model(board, shapes, placements, args)
+    if built is None:
+        return []
+
+    model, y = built
+    selected_by_id = {shape.id: shape for shape in shapes}
+    start = time.monotonic()
+    results: list[list[ShapeRecord]] = []
+    seen: set[tuple[int, ...]] = set()
+
+    for attempt in range(max(1, max_candidates)):
+        remaining_time = args.solve_time_limit - (time.monotonic() - start)
+        if remaining_time <= 0:
+            break
+
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = remaining_time
+        solver.parameters.num_search_workers = args.workers
+        solver.parameters.random_seed = (args.seed or 1) + attempt
+        solver.parameters.log_search_progress = bool(getattr(args, "solver_log", False) and attempt == 0)
+
+        status = solver.Solve(model)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            break
+
+        selected_ids = tuple(sorted(shape_id for shape_id in y if solver.Value(y[shape_id]) == 1))
+        if selected_ids in seen:
+            break
+        seen.add(selected_ids)
+        results.append([selected_by_id[i] for i in selected_ids])
+
+        # Ask CP-SAT for a genuinely different set of physical cuts next time.
+        model.Add(sum(y[i] for i in selected_ids) <= args.pieces - 1)
+
+    return results
+
+
+def solve_with_cpsat(
+    board: set[Cell],
+    shapes: list[ShapeRecord],
+    placements: list[PlacementRecord],
+    args: argparse.Namespace,
+) -> list[ShapeRecord] | None:
+    candidates = solve_with_cpsat_candidates(board, shapes, placements, args, max_candidates=1)
+    if not candidates:
         return None
 
-    selected_ids = [shape.id for shape in shapes if solver.Value(y[shape.id]) == 1]
-    selected_by_id = {shape.id: shape for shape in shapes}
-    return [selected_by_id[i] for i in selected_ids]
+    return candidates[0]
 
 
 def verify_and_write(
@@ -495,6 +747,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pieces", type=int, default=6)
     parser.add_argument("--board-w-macro", type=int, default=6)
     parser.add_argument("--board-h-macro", type=int, default=4)
+    parser.add_argument("--board-remove-min", type=int, default=0)
+    parser.add_argument("--board-remove-max", type=int, default=0)
+    parser.add_argument("--max-board-candidates", type=int, default=20)
+    parser.add_argument("--max-board-candidates-per-remove", type=int, default=5000)
+    parser.add_argument("--allow-holes", action="store_true")
     parser.add_argument("--min-piece-area", type=int, default=14)
     parser.add_argument("--max-piece-area", type=int, default=18)
     parser.add_argument("--min-half-cells", type=int, default=3)
@@ -507,21 +764,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--solve-time-limit", type=float, default=1800.0)
     parser.add_argument("--transfer-attempts", type=int, default=200)
     parser.add_argument("--max-per-rotational-family", type=int, default=1)
+    parser.add_argument("--allow-identical-pieces", action="store_true")
+    parser.add_argument("--shape-copies", type=int, default=2)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output-dir", type=Path, default=Path("out_ideal"))
     parser.add_argument("--library-json", type=Path, default=Path("out_ideal/library.json"))
     parser.add_argument("--no-rotate", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--solver-log", action="store_true")
     return parser.parse_args(argv)
 
 
 def validate_args(args: argparse.Namespace) -> None:
     if args.pieces <= 0:
         raise SystemExit("--pieces must be positive")
-    board_area = args.board_w_macro * args.board_h_macro * 4
-    if not (args.pieces * args.min_piece_area <= board_area <= args.pieces * args.max_piece_area):
-        raise SystemExit("board area is incompatible with piece area bounds")
+    if args.board_remove_min < 0 or args.board_remove_max < 0:
+        raise SystemExit("board remove counts must be non-negative")
+    if args.board_remove_min > args.board_remove_max:
+        raise SystemExit("--board-remove-min cannot exceed --board-remove-max")
+    min_board_area = (args.board_w_macro * args.board_h_macro - args.board_remove_max) * 4
+    max_board_area = (args.board_w_macro * args.board_h_macro - args.board_remove_min) * 4
+    if max_board_area < args.pieces * args.min_piece_area:
+        raise SystemExit("board area is too small for piece area bounds")
+    if min_board_area > args.pieces * args.max_piece_area:
+        raise SystemExit("board area is too large for piece area bounds")
     if args.min_piece_area % 2 or args.max_piece_area % 2:
         raise SystemExit("piece area bounds must be even small-cell counts")
     if args.required_solutions < 2:
@@ -538,30 +805,56 @@ def main(argv: list[str] | None = None) -> int:
         print("Run: python -m pip install -r requirements.txt", file=sys.stderr)
         return 2
 
-    board = rectangle_board(args.board_w_macro * 2, args.board_h_macro * 2)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     args.library_json.parent.mkdir(parents=True, exist_ok=True)
 
-    print("Building shape library...", file=sys.stderr, flush=True)
-    shapes = build_shape_library(args)
-    print(f"Built {len(shapes)} shapes.", file=sys.stderr, flush=True)
-    if len(shapes) < args.pieces:
-        print("Not enough shapes; relax constraints or increase time.", file=sys.stderr)
+    macro_boards = generate_near_rect_macro_boards(args)
+    print(f"Generated {len(macro_boards)} near-rect board(s).", file=sys.stderr, flush=True)
+    if not macro_boards:
+        print("No board candidates match the area and shape constraints.", file=sys.stderr)
         return 1
 
-    print("Enumerating placements...", file=sys.stderr, flush=True)
-    placements = enumerate_shape_placements(board, shapes)
-    print(f"Enumerated {len(placements)} placements.", file=sys.stderr, flush=True)
-    write_library_snapshot(shapes, placements, args.library_json)
+    for board_index, macro_board in enumerate(macro_boards, start=1):
+        board = macro_to_small_board(macro_board)
+        board_dir = args.output_dir / f"board_{board_index:03d}"
+        library_json = board_dir / "library.json"
+        board_dir.mkdir(parents=True, exist_ok=True)
+        print(
+            f"[board {board_index}/{len(macro_boards)}] "
+            f"macro_area={len(macro_board)} small_area={len(board)} "
+            f"score={board_score(macro_board, args.board_w_macro, args.board_h_macro):.1f}",
+            file=sys.stderr,
+            flush=True,
+        )
 
-    print("Solving CP-SAT exact-cover selection...", file=sys.stderr, flush=True)
-    selected = solve_with_cpsat(board, shapes, placements, args)
-    if selected is None:
-        print("No ideal candidate found under the current constraints.", file=sys.stderr)
-        return 1
+        print("Building shape library...", file=sys.stderr, flush=True)
+        shapes = build_shape_library(args, macro_board)
+        print(f"Built {len(shapes)} shapes.", file=sys.stderr, flush=True)
+        if len(shapes) < args.pieces:
+            print("Not enough shapes for this board.", file=sys.stderr)
+            continue
 
-    ok = verify_and_write(board, selected, args)
-    return 0 if ok else 1
+        print("Enumerating placements...", file=sys.stderr, flush=True)
+        placements = enumerate_shape_placements(board, shapes)
+        print(f"Enumerated {len(placements)} placements.", file=sys.stderr, flush=True)
+        write_library_snapshot(shapes, placements, library_json)
+
+        print("Solving CP-SAT exact-cover selection...", file=sys.stderr, flush=True)
+        selected = solve_with_cpsat(board, shapes, placements, args)
+        if selected is None:
+            print("No ideal candidate found for this board.", file=sys.stderr)
+            continue
+
+        old_output_dir = args.output_dir
+        args.output_dir = board_dir
+        ok = verify_and_write(board, selected, args)
+        args.output_dir = old_output_dir
+        if ok:
+            print(f"Found candidate in {board_dir}", file=sys.stderr)
+            return 0
+
+    print("No ideal candidate found under the current constraints.", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":
