@@ -172,6 +172,8 @@ def test_board_boundary_metrics_count_half_and_full_irregularities():
     assert half_metrics["boundary_irregularities"] == 2
     assert half_metrics["boundary_half_cell_irregularities"] == 2
     assert half_metrics["boundary_full_cell_irregularities"] == 0
+    assert half_metrics["boundary_half_left_irregularities"] == 1
+    assert half_metrics["boundary_half_bottom_irregularities"] == 1
 
     half_protruded = base.masks_to_cells(
         {
@@ -186,6 +188,7 @@ def test_board_boundary_metrics_count_half_and_full_irregularities():
     assert protruded_metrics["boundary_irregularities"] == 1
     assert protruded_metrics["boundary_half_cell_irregularities"] == 1
     assert protruded_metrics["boundary_full_cell_irregularities"] == 0
+    assert protruded_metrics["boundary_half_top_irregularities"] == 1
 
     full_cell_notched = base.macro_to_full_small({(0, 0), (1, 0), (0, 1)})
     full_metrics = base.board_boundary_metrics(full_cell_notched)
@@ -197,6 +200,7 @@ def test_generate_boundary_small_boards_prefers_half_notches():
     args = SimpleNamespace(
         min_boundary_irregularities=2,
         min_boundary_half_notches=2,
+        min_boundary_half_notches_per_side=0,
         max_boundary_half_notches=2,
         max_boundary_full_cell_irregularities=0,
         max_board_variants_per_macro=3,
@@ -232,6 +236,29 @@ def test_boundary_half_edits_leave_adjacent_edges_plain():
     assert ideal.boundary_edits_are_spaced((top_0, top_2))
 
 
+def test_boundary_half_edits_can_require_two_per_side():
+    board = ideal.macro_rectangle(6, 4)
+    options = ideal.half_notch_options(board) + ideal.half_protrusion_options(board)
+    combo = next(
+        ideal.iter_boundary_edit_combos(
+            options,
+            board,
+            min_count=8,
+            max_count=8,
+            min_per_side=2,
+            limit=10,
+        )
+    )
+
+    assert ideal.boundary_edits_are_spaced(combo)
+    assert ideal.boundary_edit_side_counts(combo, board) == {
+        "top": 2,
+        "right": 2,
+        "bottom": 2,
+        "left": 2,
+    }
+
+
 def test_rect_half_boards_keep_rectangle_macro_and_half_only_boundary():
     args = SimpleNamespace(
         board_w_macro=6,
@@ -241,10 +268,11 @@ def test_rect_half_boards_keep_rectangle_macro_and_half_only_boundary():
         board_style="rect_half",
         board_roughness="rough",
         max_board_candidates=5,
-        max_board_candidates_per_remove=100,
-        min_boundary_irregularities=2,
-        min_boundary_half_notches=2,
-        max_boundary_half_notches=4,
+        max_board_candidates_per_remove=5000,
+        min_boundary_irregularities=8,
+        min_boundary_half_notches=8,
+        min_boundary_half_notches_per_side=2,
+        max_boundary_half_notches=8,
         max_boundary_full_cell_irregularities=0,
         max_board_variants_per_macro=4,
         allow_holes=False,
@@ -259,9 +287,11 @@ def test_rect_half_boards_keep_rectangle_macro_and_half_only_boundary():
     assert small_boards
     for board in small_boards:
         metrics = base.board_boundary_metrics(board)
-        assert metrics["boundary_irregularities"] >= 2
-        assert metrics["boundary_half_cell_irregularities"] >= 2
+        assert metrics["boundary_irregularities"] >= 8
+        assert metrics["boundary_half_cell_irregularities"] >= 8
         assert metrics["boundary_full_cell_irregularities"] == 0
+        for side in ideal.BOUNDARY_SIDES:
+            assert metrics[f"boundary_half_{side}_irregularities"] >= 2
 
 
 def test_cpsat_rejects_pure_identical_piece_swap_proofs():
@@ -305,8 +335,10 @@ def test_ranked_piece_area_defaults_are_three_to_five_ordinary_cells():
     assert args.min_piece_area == 12
     assert args.max_piece_area == 20
     assert args.board_style == "rect_half"
-    assert args.min_boundary_irregularities == 2
-    assert args.min_boundary_half_notches == 2
+    assert args.min_boundary_irregularities == 8
+    assert args.min_boundary_half_notches == 8
+    assert args.min_boundary_half_notches_per_side == 2
+    assert args.max_boundary_half_notches == 8
     assert args.max_boundary_full_cell_irregularities == 0
     assert args.min_horizontal_half_cells == 1
     assert args.min_vertical_half_cells == 1

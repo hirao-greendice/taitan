@@ -258,6 +258,12 @@ def make_candidate(
         return None
     if board_metrics["boundary_half_cell_irregularities"] < getattr(args, "min_boundary_half_notches", 0):
         return None
+    if any(
+        board_metrics[f"boundary_half_{side}_irregularities"]
+        < getattr(args, "min_boundary_half_notches_per_side", 0)
+        for side in ideal.BOUNDARY_SIDES
+    ):
+        return None
     if board_metrics["boundary_full_cell_irregularities"] > getattr(
         args,
         "max_boundary_full_cell_irregularities",
@@ -748,6 +754,11 @@ def add_random_fallback_results(
             continue
         if board_metrics["boundary_half_cell_irregularities"] < args.min_boundary_half_notches:
             continue
+        if any(
+            board_metrics[f"boundary_half_{side}_irregularities"] < args.min_boundary_half_notches_per_side
+            for side in ideal.BOUNDARY_SIDES
+        ):
+            continue
         if board_metrics["boundary_full_cell_irregularities"] > args.max_boundary_full_cell_irregularities:
             continue
         if analysis.horizontal_half_cell_count < args.min_horizontal_half_cells:
@@ -794,9 +805,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--effort", choices=("fast", "balanced", "relaxed", "deep", "extreme"), default="balanced")
     parser.add_argument("--board-roughness", choices=BOARD_ROUGHNESS_CHOICES, default="rough")
     parser.add_argument("--board-style", choices=("rect_half", "staggered", "near_rect", "mixed"), default="rect_half")
-    parser.add_argument("--min-boundary-irregularities", type=int, default=2)
-    parser.add_argument("--min-boundary-half-notches", type=int, default=2)
-    parser.add_argument("--max-boundary-half-notches", type=int, default=4)
+    parser.add_argument("--min-boundary-irregularities", type=int, default=8)
+    parser.add_argument("--min-boundary-half-notches", type=int, default=8)
+    parser.add_argument("--min-boundary-half-notches-per-side", type=int, default=2)
+    parser.add_argument("--max-boundary-half-notches", type=int, default=8)
     parser.add_argument("--max-boundary-full-cell-irregularities", type=int, default=0)
     parser.add_argument("--max-board-variants-per-macro", type=int, default=8)
     parser.add_argument("--min-horizontal-half-cells", type=int, default=1)

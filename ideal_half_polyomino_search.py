@@ -47,6 +47,7 @@ import generate_half_polyomino as base
 Cell = tuple[int, int]
 MacroCell = tuple[int, int]
 BoundaryEdge = tuple[str, int, int]
+BOUNDARY_SIDES = ("top", "right", "bottom", "left")
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,42 @@ def boundary_edge_endpoints(edge: BoundaryEdge) -> tuple[MacroCell, MacroCell]:
     return (x, y), (x, y + 1)
 
 
+def macro_cell_bounds(cells: set[MacroCell]) -> tuple[int, int, int, int]:
+    min_x = min(x for x, _ in cells)
+    max_x = max(x for x, _ in cells)
+    min_y = min(y for _, y in cells)
+    max_y = max(y for _, y in cells)
+    return min_x, min_y, max_x, max_y
+
+
+def boundary_edge_side(edge: BoundaryEdge, macro_board: set[MacroCell]) -> str | None:
+    min_x, min_y, max_x, max_y = macro_cell_bounds(macro_board)
+    axis, x, y = edge
+    if axis == "h":
+        if y == min_y:
+            return "top"
+        if y == max_y + 1:
+            return "bottom"
+    else:
+        if x == min_x:
+            return "left"
+        if x == max_x + 1:
+            return "right"
+    return None
+
+
+def boundary_edit_side_counts(
+    edits: tuple[HalfBoundaryEdit, ...],
+    macro_board: set[MacroCell],
+) -> dict[str, int]:
+    counts = {side: 0 for side in BOUNDARY_SIDES}
+    for edit in edits:
+        side = boundary_edge_side(edit.edge, macro_board)
+        if side in counts:
+            counts[side] += 1
+    return counts
+
+
 def boundary_edits_are_spaced(edits: tuple[HalfBoundaryEdit, ...]) -> bool:
     used_edges: set[BoundaryEdge] = set()
     used_endpoints: set[MacroCell] = set()
@@ -150,6 +187,97 @@ def boundary_edits_are_spaced(edits: tuple[HalfBoundaryEdit, ...]) -> bool:
         used_edges.add(edit.edge)
         used_endpoints.update(endpoints)
     return True
+
+
+def boundary_edits_meet_side_minimums(
+    edits: tuple[HalfBoundaryEdit, ...],
+    macro_board: set[MacroCell],
+    min_per_side: int,
+) -> bool:
+    if min_per_side <= 0:
+        return True
+    counts = boundary_edit_side_counts(edits, macro_board)
+    return all(counts[side] >= min_per_side for side in BOUNDARY_SIDES)
+
+
+def iter_boundary_edit_combos(
+    options: list[HalfBoundaryEdit],
+    macro_board: set[MacroCell],
+    min_count: int,
+    max_count: int,
+    min_per_side: int,
+    limit: int,
+):
+    side_order = {side: index for index, side in enumerate(BOUNDARY_SIDES)}
+
+    def sort_key(edit: HalfBoundaryEdit) -> tuple[int, int, int, int, int]:
+        side = boundary_edge_side(edit.edge, macro_board)
+        axis, x, y = edit.edge
+        position = x if axis == "h" else y
+        return (side_order.get(side, len(side_order)), position, x, y, edit.mask)
+
+    ordered = sorted(options, key=sort_key)
+    option_sides = [boundary_edge_side(option.edge, macro_board) for option in ordered]
+    suffix_counts = [{side: 0 for side in BOUNDARY_SIDES} for _ in range(len(ordered) + 1)]
+    for index in range(len(ordered) - 1, -1, -1):
+        suffix_counts[index] = suffix_counts[index + 1].copy()
+        side = option_sides[index]
+        if side in suffix_counts[index]:
+            suffix_counts[index][side] += 1
+
+    yielded = 0
+
+    def search(
+        start: int,
+        chosen: list[HalfBoundaryEdit],
+        used_edges: set[BoundaryEdge],
+        used_endpoints: set[MacroCell],
+        side_counts: dict[str, int],
+    ):
+        nonlocal yielded
+        if yielded >= limit:
+            return
+        chosen_count = len(chosen)
+        if chosen_count > max_count:
+            return
+        if chosen_count + (len(ordered) - start) < min_count:
+            return
+        needed_sides = sum(max(0, min_per_side - side_counts[side]) for side in BOUNDARY_SIDES)
+        if chosen_count + needed_sides > max_count:
+            return
+        for side in BOUNDARY_SIDES:
+            if side_counts[side] + suffix_counts[start][side] < min_per_side:
+                return
+        if chosen_count >= min_count and all(side_counts[side] >= min_per_side for side in BOUNDARY_SIDES):
+            yielded += 1
+            yield tuple(chosen)
+            if chosen_count == max_count:
+                return
+
+        for index in range(start, len(ordered)):
+            option = ordered[index]
+            if option.edge in used_edges:
+                continue
+            endpoints = set(boundary_edge_endpoints(option.edge))
+            if endpoints & used_endpoints:
+                continue
+            side = option_sides[index]
+            next_counts = side_counts.copy()
+            if side in next_counts:
+                next_counts[side] += 1
+            chosen.append(option)
+            yield from search(
+                index + 1,
+                chosen,
+                used_edges | {option.edge},
+                used_endpoints | endpoints,
+                next_counts,
+            )
+            chosen.pop()
+            if yielded >= limit:
+                return
+
+    yield from search(0, [], set(), set(), {side: 0 for side in BOUNDARY_SIDES})
 
 
 def half_notch_options(cells: set[MacroCell]) -> list[HalfBoundaryEdit]:
@@ -204,6 +332,7 @@ def generate_boundary_small_boards(
 ) -> list[set[Cell]]:
     min_irregularities = int(getattr(args, "min_boundary_irregularities", 0))
     min_half_notches = int(getattr(args, "min_boundary_half_notches", 0))
+    min_half_per_side = int(getattr(args, "min_boundary_half_notches_per_side", 0))
     max_half_notches = int(getattr(args, "max_boundary_half_notches", max(2, min_half_notches)))
     max_full_irregularities = int(getattr(args, "max_boundary_full_cell_irregularities", 0))
     max_variants = int(getattr(args, "max_board_variants_per_macro", 1))
@@ -229,6 +358,11 @@ def generate_boundary_small_boards(
             return
         if metrics["boundary_half_cell_irregularities"] < min_half_notches:
             return
+        if min_half_per_side > 0 and any(
+            metrics[f"boundary_half_{side}_irregularities"] < min_half_per_side
+            for side in BOUNDARY_SIDES
+        ):
+            return
         if metrics["boundary_full_cell_irregularities"] > max_full_irregularities:
             return
         if not (args.pieces * args.min_piece_area <= len(board) <= args.pieces * args.max_piece_area):
@@ -237,13 +371,17 @@ def generate_boundary_small_boards(
 
     maybe_add(macro_to_small_board(macro_board))
     options = half_notch_options(macro_board) + half_protrusion_options(macro_board)
-    for notch_count in range(max(0, min_half_notches), max_half_notches + 1):
-        if notch_count == 0:
-            continue
-        for combo_index, combo in enumerate(itertools.combinations(options, notch_count)):
-            if combo_index >= args.max_board_candidates_per_remove:
-                break
-            if not boundary_edits_are_spaced(combo):
+    required_half_notches = max(0, min_half_notches, min_half_per_side * len(BOUNDARY_SIDES))
+    if max_half_notches >= required_half_notches:
+        for combo in iter_boundary_edit_combos(
+            options,
+            macro_board,
+            required_half_notches,
+            max_half_notches,
+            min_half_per_side,
+            int(args.max_board_candidates_per_remove),
+        ):
+            if not boundary_edits_meet_side_minimums(combo, macro_board, min_half_per_side):
                 continue
             cells = [edit.cell for edit in combo]
             if len(set(cells)) != len(cells):
@@ -1340,9 +1478,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--board-style", choices=("rect_half", "staggered", "near_rect", "mixed"), default="rect_half")
     parser.add_argument("--max-board-candidates", type=int, default=20)
     parser.add_argument("--max-board-candidates-per-remove", type=int, default=5000)
-    parser.add_argument("--min-boundary-irregularities", type=int, default=2)
-    parser.add_argument("--min-boundary-half-notches", type=int, default=2)
-    parser.add_argument("--max-boundary-half-notches", type=int, default=4)
+    parser.add_argument("--min-boundary-irregularities", type=int, default=8)
+    parser.add_argument("--min-boundary-half-notches", type=int, default=8)
+    parser.add_argument("--min-boundary-half-notches-per-side", type=int, default=2)
+    parser.add_argument("--max-boundary-half-notches", type=int, default=8)
     parser.add_argument("--max-boundary-full-cell-irregularities", type=int, default=0)
     parser.add_argument("--max-board-variants-per-macro", type=int, default=8)
     parser.add_argument("--allow-holes", action="store_true")
@@ -1379,10 +1518,16 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("board remove counts must be non-negative")
     if args.board_remove_min > args.board_remove_max:
         raise SystemExit("--board-remove-min cannot exceed --board-remove-max")
-    if args.min_boundary_irregularities < 0 or args.min_boundary_half_notches < 0:
+    if (
+        args.min_boundary_irregularities < 0
+        or args.min_boundary_half_notches < 0
+        or args.min_boundary_half_notches_per_side < 0
+    ):
         raise SystemExit("boundary irregularity minimums must be non-negative")
     if args.max_boundary_half_notches < args.min_boundary_half_notches:
         raise SystemExit("--max-boundary-half-notches cannot be smaller than --min-boundary-half-notches")
+    if args.max_boundary_half_notches < args.min_boundary_half_notches_per_side * len(BOUNDARY_SIDES):
+        raise SystemExit("--max-boundary-half-notches is too small for the per-side boundary minimum")
     if args.max_boundary_full_cell_irregularities < 0:
         raise SystemExit("--max-boundary-full-cell-irregularities must be non-negative")
     if args.max_board_variants_per_macro <= 0:

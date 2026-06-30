@@ -265,6 +265,11 @@ def board_boundary_metrics(cells: set[Cell] | frozenset[Cell]) -> dict[str, floa
             "boundary_irregularities": 0,
             "boundary_half_cell_irregularities": 0,
             "boundary_full_cell_irregularities": 0,
+            "boundary_half_top_irregularities": 0,
+            "boundary_half_right_irregularities": 0,
+            "boundary_half_bottom_irregularities": 0,
+            "boundary_half_left_irregularities": 0,
+            "boundary_half_side_min": 0,
         }
 
     macro_cells = set(masks)
@@ -275,6 +280,21 @@ def board_boundary_metrics(cells: set[Cell] | frozenset[Cell]) -> dict[str, floa
     min_y = min(y for _, y in reference_cells)
     max_y = max(y for _, y in reference_cells)
     half_irregularities = sum(1 for mask in masks.values() if mask in HALF_MASKS)
+    half_side_counts = {
+        "top": 0,
+        "right": 0,
+        "bottom": 0,
+        "left": 0,
+    }
+    for (x, y), mask in masks.items():
+        if mask == MASK_BOTTOM and y in (min_y - 1, min_y):
+            half_side_counts["top"] += 1
+        elif mask == MASK_TOP and y in (max_y, max_y + 1):
+            half_side_counts["bottom"] += 1
+        elif mask == MASK_RIGHT and x in (min_x - 1, min_x):
+            half_side_counts["left"] += 1
+        elif mask == MASK_LEFT and x in (max_x, max_x + 1):
+            half_side_counts["right"] += 1
     missing_adjacent = {
         (x, y)
         for y in range(min_y, max_y + 1)
@@ -290,6 +310,11 @@ def board_boundary_metrics(cells: set[Cell] | frozenset[Cell]) -> dict[str, floa
         "boundary_irregularities": half_irregularities + full_irregularities,
         "boundary_half_cell_irregularities": half_irregularities,
         "boundary_full_cell_irregularities": full_irregularities,
+        "boundary_half_top_irregularities": half_side_counts["top"],
+        "boundary_half_right_irregularities": half_side_counts["right"],
+        "boundary_half_bottom_irregularities": half_side_counts["bottom"],
+        "boundary_half_left_irregularities": half_side_counts["left"],
+        "boundary_half_side_min": min(half_side_counts.values()),
     }
 
 
