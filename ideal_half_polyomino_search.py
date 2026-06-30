@@ -46,6 +46,14 @@ import generate_half_polyomino as base
 
 Cell = tuple[int, int]
 MacroCell = tuple[int, int]
+BoundaryEdge = tuple[str, int, int]
+
+
+@dataclass(frozen=True)
+class HalfBoundaryEdit:
+    cell: MacroCell
+    mask: int
+    edge: BoundaryEdge
 
 
 @dataclass(frozen=True)
@@ -111,32 +119,82 @@ def macro_rectangle(width_macro: int, height_macro: int) -> set[MacroCell]:
     return {(x, y) for y in range(height_macro) for x in range(width_macro)}
 
 
+def normalize_macro_cells(cells: set[MacroCell]) -> set[MacroCell]:
+    if not cells:
+        return set()
+    min_x = min(x for x, _ in cells)
+    min_y = min(y for _, y in cells)
+    return {(x - min_x, y - min_y) for x, y in cells}
+
+
 def macro_to_small_board(cells: set[MacroCell]) -> set[Cell]:
     return base.macro_to_full_small(cells)
 
 
-def half_notch_options(cells: set[MacroCell]) -> list[tuple[MacroCell, int]]:
-    options: list[tuple[MacroCell, int]] = []
+def boundary_edge_endpoints(edge: BoundaryEdge) -> tuple[MacroCell, MacroCell]:
+    axis, x, y = edge
+    if axis == "h":
+        return (x, y), (x + 1, y)
+    return (x, y), (x, y + 1)
+
+
+def boundary_edits_are_spaced(edits: tuple[HalfBoundaryEdit, ...]) -> bool:
+    used_edges: set[BoundaryEdge] = set()
+    used_endpoints: set[MacroCell] = set()
+    for edit in edits:
+        if edit.edge in used_edges:
+            return False
+        endpoints = set(boundary_edge_endpoints(edit.edge))
+        if endpoints & used_endpoints:
+            return False
+        used_edges.add(edit.edge)
+        used_endpoints.update(endpoints)
+    return True
+
+
+def half_notch_options(cells: set[MacroCell]) -> list[HalfBoundaryEdit]:
+    options: list[HalfBoundaryEdit] = []
     for x, y in sorted(cells):
         checks = (
-            ((x - 1, y), base.MASK_RIGHT),
-            ((x + 1, y), base.MASK_LEFT),
-            ((x, y - 1), base.MASK_BOTTOM),
-            ((x, y + 1), base.MASK_TOP),
+            ((x - 1, y), base.MASK_RIGHT, ("v", x, y)),
+            ((x + 1, y), base.MASK_LEFT, ("v", x + 1, y)),
+            ((x, y - 1), base.MASK_BOTTOM, ("h", x, y)),
+            ((x, y + 1), base.MASK_TOP, ("h", x, y + 1)),
         )
-        for neighbor, keep_mask in checks:
+        for neighbor, keep_mask, edge in checks:
             if neighbor not in cells:
-                options.append(((x, y), keep_mask))
+                options.append(HalfBoundaryEdit((x, y), keep_mask, edge))
+    return options
+
+
+def half_protrusion_options(cells: set[MacroCell]) -> list[HalfBoundaryEdit]:
+    options: list[HalfBoundaryEdit] = []
+    seen: set[tuple[MacroCell, int]] = set()
+    for x, y in sorted(cells):
+        checks = (
+            ((x - 1, y), base.MASK_RIGHT, ("v", x, y)),
+            ((x + 1, y), base.MASK_LEFT, ("v", x + 1, y)),
+            ((x, y - 1), base.MASK_BOTTOM, ("h", x, y)),
+            ((x, y + 1), base.MASK_TOP, ("h", x, y + 1)),
+        )
+        for neighbor, protrusion_mask, edge in checks:
+            if neighbor in cells:
+                continue
+            option = (neighbor, protrusion_mask)
+            if option in seen:
+                continue
+            seen.add(option)
+            options.append(HalfBoundaryEdit(neighbor, protrusion_mask, edge))
     return options
 
 
 def macro_to_small_board_with_half_notches(
     cells: set[MacroCell],
-    notches: tuple[tuple[MacroCell, int], ...],
+    notches: tuple[HalfBoundaryEdit, ...],
 ) -> set[Cell]:
     masks = {cell: base.MASK_FULL for cell in cells}
-    for cell, keep_mask in notches:
-        masks[cell] = keep_mask
+    for edit in notches:
+        masks[edit.cell] = edit.mask
     return base.masks_to_cells(masks)
 
 
@@ -147,6 +205,7 @@ def generate_boundary_small_boards(
     min_irregularities = int(getattr(args, "min_boundary_irregularities", 0))
     min_half_notches = int(getattr(args, "min_boundary_half_notches", 0))
     max_half_notches = int(getattr(args, "max_boundary_half_notches", max(2, min_half_notches)))
+    max_full_irregularities = int(getattr(args, "max_boundary_full_cell_irregularities", 0))
     max_variants = int(getattr(args, "max_board_variants_per_macro", 1))
     allow_holes = bool(getattr(args, "allow_holes", False))
     candidates: list[set[Cell]] = []
@@ -170,19 +229,23 @@ def generate_boundary_small_boards(
             return
         if metrics["boundary_half_cell_irregularities"] < min_half_notches:
             return
+        if metrics["boundary_full_cell_irregularities"] > max_full_irregularities:
+            return
         if not (args.pieces * args.min_piece_area <= len(board) <= args.pieces * args.max_piece_area):
             return
         candidates.append(board)
 
     maybe_add(macro_to_small_board(macro_board))
-    options = half_notch_options(macro_board)
+    options = half_notch_options(macro_board) + half_protrusion_options(macro_board)
     for notch_count in range(max(0, min_half_notches), max_half_notches + 1):
         if notch_count == 0:
             continue
         for combo_index, combo in enumerate(itertools.combinations(options, notch_count)):
             if combo_index >= args.max_board_candidates_per_remove:
                 break
-            cells = [cell for cell, _ in combo]
+            if not boundary_edits_are_spaced(combo):
+                continue
+            cells = [edit.cell for edit in combo]
             if len(set(cells)) != len(cells):
                 continue
             maybe_add(macro_to_small_board_with_half_notches(macro_board, combo))
@@ -196,6 +259,112 @@ def generate_boundary_small_boards(
         reverse=True,
     )
     return candidates[:max_variants]
+
+
+def row_interval_macro_board(row_length: int, offsets: list[int]) -> set[MacroCell]:
+    return normalize_macro_cells(
+        {
+            (x + offset, y)
+            for y, offset in enumerate(offsets)
+            for x in range(row_length)
+        }
+    )
+
+
+def add_staggered_tabs(cells: set[MacroCell], parity: int) -> set[MacroCell]:
+    rows: defaultdict[int, list[int]] = defaultdict(list)
+    for x, y in cells:
+        rows[y].append(x)
+    top_y = min(rows)
+    bottom_y = max(rows)
+    top_xs = sorted(rows[top_y])
+    bottom_xs = sorted(rows[bottom_y])
+    result = set(cells)
+    for index, x in enumerate(top_xs[1:-1], start=1):
+        if index % 2 == parity:
+            result.add((x, top_y - 1))
+    for index, x in enumerate(bottom_xs[1:-1], start=1):
+        if index % 2 != parity:
+            result.add((x, bottom_y + 1))
+    return normalize_macro_cells(result)
+
+
+def staggered_macro_score(cells: set[MacroCell]) -> float:
+    rows: dict[int, list[int]] = defaultdict(list)
+    for x, y in cells:
+        rows[y].append(x)
+    if len(rows) < 3:
+        return 0.0
+
+    intervals = []
+    for y in sorted(rows):
+        xs = sorted(rows[y])
+        intervals.append((min(xs), max(xs), len(xs)))
+
+    left_steps = [abs(intervals[i + 1][0] - intervals[i][0]) for i in range(len(intervals) - 1)]
+    right_steps = [abs(intervals[i + 1][1] - intervals[i][1]) for i in range(len(intervals) - 1)]
+    gentle_steps = sum(1 for step in left_steps + right_steps if step == 1)
+    hard_jumps = sum(max(0, step - 1) for step in left_steps + right_steps)
+    lengths = [length for _, _, length in intervals]
+    length_spread = max(lengths) - min(lengths)
+    max_length = max(lengths)
+    cap_rows = sum(1 for length in (lengths[0], lengths[-1]) if length <= max(2, max_length // 2))
+    return gentle_steps * 3.0 + cap_rows * 10.0 - hard_jumps * 5.0 - max(0, length_spread - 4) * 1.5
+
+
+def generate_staggered_macro_boards(args: argparse.Namespace) -> list[set[MacroCell]]:
+    base_width = max(args.board_w_macro, args.board_h_macro)
+    base_height = min(args.board_w_macro, args.board_h_macro)
+    width_options = sorted({max(4, base_width - 1), max(4, base_width)})
+    height_options = sorted({max(3, base_height), max(3, min(base_height + 1, 5))})
+    max_candidates = max(1, int(getattr(args, "max_board_candidates", 20)))
+
+    candidates: list[set[MacroCell]] = []
+    seen: set[tuple[MacroCell, ...]] = set()
+
+    def maybe_add(board: set[MacroCell]) -> None:
+        board = normalize_macro_cells(board)
+        signature = tuple(sorted(board))
+        if signature in seen:
+            return
+        seen.add(signature)
+        if not board:
+            return
+        if not base.is_macro_connected(board):
+            return
+        if not getattr(args, "allow_holes", False) and base.has_macro_hole(board):
+            return
+        small_area = len(board) * 4
+        if not (args.pieces * args.min_piece_area <= small_area <= args.pieces * args.max_piece_area):
+            return
+        if staggered_macro_score(board) <= 0:
+            return
+        candidates.append(board)
+
+    for row_length in width_options:
+        for height in height_options:
+            offset_patterns = [
+                [i % 2 for i in range(height)],
+                [(i + 1) % 2 for i in range(height)],
+                [abs((i % 4) - 1) for i in range(height)],
+                [1 if i in (0, height - 1) else 0 for i in range(height)],
+            ]
+            for offsets in offset_patterns:
+                board = row_interval_macro_board(row_length, offsets)
+                maybe_add(board)
+                for parity in (0, 1):
+                    maybe_add(add_staggered_tabs(board, parity))
+
+    target_area = args.pieces * ((args.min_piece_area + args.max_piece_area) / 8.0)
+    candidates.sort(
+        key=lambda board: (
+            staggered_macro_score(board),
+            -abs(len(board) - target_area),
+            board_score(board, args.board_w_macro, args.board_h_macro, "rough"),
+        ),
+        reverse=True,
+    )
+    return candidates[:max_candidates]
 
 
 def macro_perimeter(cells: set[MacroCell]) -> int:
@@ -283,41 +452,63 @@ def boundary_macro_cells(cells: set[MacroCell]) -> list[MacroCell]:
 
 
 def generate_near_rect_macro_boards(args: argparse.Namespace) -> list[set[MacroCell]]:
-    base_board = macro_rectangle(args.board_w_macro, args.board_h_macro)
     candidates: list[set[MacroCell]] = []
     seen: set[tuple[MacroCell, ...]] = set()
-    boundary = boundary_macro_cells(base_board)
     roughness = getattr(args, "board_roughness", "balanced")
+    board_style = getattr(args, "board_style", "rect_half")
+    max_half_notches = int(getattr(args, "max_boundary_half_notches", 0))
 
-    for remove_count in range(args.board_remove_min, args.board_remove_max + 1):
-        if remove_count == 0:
-            boards = [set(base_board)]
-        else:
-            combos = itertools.combinations(boundary, remove_count)
-            boards = []
-            for combo_index, combo in enumerate(combos):
-                if combo_index >= args.max_board_candidates_per_remove:
-                    break
-                boards.append(base_board - set(combo))
+    def maybe_add(board: set[MacroCell]) -> None:
+        board = normalize_macro_cells(board)
+        if len(board) == 0:
+            return
+        signature = tuple(sorted(board))
+        if signature in seen:
+            return
+        seen.add(signature)
+        if not base.is_macro_connected(board):
+            return
+        if not args.allow_holes and base.has_macro_hole(board):
+            return
+        small_area = len(board) * 4
+        min_possible_area = small_area - max_half_notches * 2
+        max_possible_area = small_area + max_half_notches * 2
+        if (
+            max_possible_area < args.pieces * args.min_piece_area
+            or min_possible_area > args.pieces * args.max_piece_area
+        ):
+            return
+        candidates.append(board)
 
-        for board in boards:
-            if len(board) == 0:
-                continue
-            signature = tuple(sorted(board))
-            if signature in seen:
-                continue
-            seen.add(signature)
-            if not base.is_macro_connected(board):
-                continue
-            if not args.allow_holes and base.has_macro_hole(board):
-                continue
-            small_area = len(board) * 4
-            if not (args.pieces * args.min_piece_area <= small_area <= args.pieces * args.max_piece_area):
-                continue
-            candidates.append(board)
+    if board_style in ("rect_half", "mixed"):
+        maybe_add(macro_rectangle(args.board_w_macro, args.board_h_macro))
+
+    if board_style in ("staggered", "mixed"):
+        for board in generate_staggered_macro_boards(args):
+            maybe_add(board)
+
+    if board_style in ("near_rect", "mixed"):
+        base_board = macro_rectangle(args.board_w_macro, args.board_h_macro)
+        boundary = boundary_macro_cells(base_board)
+        for remove_count in range(args.board_remove_min, args.board_remove_max + 1):
+            if remove_count == 0:
+                boards = [set(base_board)]
+            else:
+                combos = itertools.combinations(boundary, remove_count)
+                boards = []
+                for combo_index, combo in enumerate(combos):
+                    if combo_index >= args.max_board_candidates_per_remove:
+                        break
+                    boards.append(base_board - set(combo))
+
+            for board in boards:
+                maybe_add(board)
 
     candidates.sort(
-        key=lambda board: board_score(board, args.board_w_macro, args.board_h_macro, roughness),
+        key=lambda board: (
+            staggered_macro_score(board),
+            board_score(board, args.board_w_macro, args.board_h_macro, roughness),
+        ),
         reverse=True,
     )
     return candidates[: args.max_board_candidates]
@@ -1146,11 +1337,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--board-h-macro", type=int, default=4)
     parser.add_argument("--board-remove-min", type=int, default=0)
     parser.add_argument("--board-remove-max", type=int, default=0)
+    parser.add_argument("--board-style", choices=("rect_half", "staggered", "near_rect", "mixed"), default="rect_half")
     parser.add_argument("--max-board-candidates", type=int, default=20)
     parser.add_argument("--max-board-candidates-per-remove", type=int, default=5000)
     parser.add_argument("--min-boundary-irregularities", type=int, default=2)
     parser.add_argument("--min-boundary-half-notches", type=int, default=2)
     parser.add_argument("--max-boundary-half-notches", type=int, default=4)
+    parser.add_argument("--max-boundary-full-cell-irregularities", type=int, default=0)
     parser.add_argument("--max-board-variants-per-macro", type=int, default=8)
     parser.add_argument("--allow-holes", action="store_true")
     parser.add_argument("--min-piece-area", type=int, default=12)
@@ -1190,10 +1383,14 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("boundary irregularity minimums must be non-negative")
     if args.max_boundary_half_notches < args.min_boundary_half_notches:
         raise SystemExit("--max-boundary-half-notches cannot be smaller than --min-boundary-half-notches")
+    if args.max_boundary_full_cell_irregularities < 0:
+        raise SystemExit("--max-boundary-full-cell-irregularities must be non-negative")
     if args.max_board_variants_per_macro <= 0:
         raise SystemExit("--max-board-variants-per-macro must be positive")
     min_board_area = (args.board_w_macro * args.board_h_macro - args.board_remove_max) * 4
+    min_board_area -= args.max_boundary_half_notches * 2
     max_board_area = (args.board_w_macro * args.board_h_macro - args.board_remove_min) * 4
+    max_board_area += args.max_boundary_half_notches * 2
     if max_board_area < args.pieces * args.min_piece_area:
         raise SystemExit("board area is too small for piece area bounds")
     if min_board_area > args.pieces * args.max_piece_area:

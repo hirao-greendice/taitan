@@ -268,10 +268,12 @@ def board_boundary_metrics(cells: set[Cell] | frozenset[Cell]) -> dict[str, floa
         }
 
     macro_cells = set(masks)
-    min_x = min(x for x, _ in macro_cells)
-    max_x = max(x for x, _ in macro_cells)
-    min_y = min(y for _, y in macro_cells)
-    max_y = max(y for _, y in macro_cells)
+    full_macro_cells = {cell for cell, mask in masks.items() if mask == MASK_FULL}
+    reference_cells = full_macro_cells or macro_cells
+    min_x = min(x for x, _ in reference_cells)
+    max_x = max(x for x, _ in reference_cells)
+    min_y = min(y for _, y in reference_cells)
+    max_y = max(y for _, y in reference_cells)
     half_irregularities = sum(1 for mask in masks.values() if mask in HALF_MASKS)
     missing_adjacent = {
         (x, y)

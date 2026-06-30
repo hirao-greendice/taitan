@@ -86,6 +86,7 @@ def small_board_metrics(board: set[tuple[int, int]]) -> dict[str, float]:
     aspect = max(bbox_w, bbox_h) / max(1, min(bbox_w, bbox_h))
     narrow_corridor = ideal.narrow_corridor_penalty(macro)
     boundary_metrics = base.board_boundary_metrics(board)
+    staggered_score = ideal.staggered_macro_score(macro)
     return {
         "macro_area": len(macro),
         "bbox_w": bbox_w,
@@ -95,6 +96,7 @@ def small_board_metrics(board: set[tuple[int, int]]) -> dict[str, float]:
         "perimeter_extra": max(0, perimeter - ideal_perimeter),
         "aspect": aspect,
         "narrow_corridor": narrow_corridor,
+        "staggered_score": staggered_score,
         **boundary_metrics,
     }
 
@@ -159,7 +161,8 @@ def rank_candidate(
     score += metrics["small_fill"] * fill_weight * 0.35
     score -= metrics["perimeter_extra"] * perimeter_weight * 0.35
     score += metrics["boundary_half_cell_irregularities"] * 170
-    score += metrics["boundary_full_cell_irregularities"] * 45
+    score -= metrics["boundary_full_cell_irregularities"] * 260
+    score += metrics["staggered_score"] * 70
     if metrics["boundary_irregularities"] < 2:
         score -= 850
     score -= max(0.0, metrics["aspect"] - aspect_limit) * aspect_weight
@@ -206,6 +209,7 @@ def rank_candidate(
         f"board {note_w}x{note_h} remove={remove_count} roughness={board_roughness} "
         f"boundary={int(metrics['boundary_irregularities'])} "
         f"half_boundary={int(metrics['boundary_half_cell_irregularities'])} "
+        f"staggered={metrics['staggered_score']:.1f} "
         f"perimeter_extra={int(metrics['perimeter_extra'])} fill={metrics['small_fill']:.2f} "
         f"narrow_corridor={int(metrics['narrow_corridor'])}"
     )
@@ -291,6 +295,7 @@ def make_candidate(
     board_metrics = base.board_boundary_metrics(board)
     min_boundary = getattr(args, "min_boundary_irregularities", 0)
     min_boundary_half = getattr(args, "min_boundary_half_notches", 0)
+    max_boundary_full = getattr(args, "max_boundary_full_cell_irregularities", 0)
     if board_metrics["boundary_irregularities"] < min_boundary:
         reject_reasons.append(
             "not_enough_boundary_irregularities "
@@ -300,6 +305,11 @@ def make_candidate(
         reject_reasons.append(
             "not_enough_boundary_half_notches "
             f"half={board_metrics['boundary_half_cell_irregularities']} min={min_boundary_half}"
+        )
+    if board_metrics["boundary_full_cell_irregularities"] > max_boundary_full:
+        reject_reasons.append(
+            "too_many_full_cell_boundary_irregularities "
+            f"full={board_metrics['boundary_full_cell_irregularities']} max={max_boundary_full}"
         )
     min_horizontal = getattr(args, "min_horizontal_half_cells", 0)
     min_vertical = getattr(args, "min_vertical_half_cells", 0)
@@ -743,6 +753,7 @@ def write_ranked_outputs(results: list[RankedResult], output_dir: Path, limit: i
                 "board_fill": metrics["fill"],
                 "board_small_fill": metrics["small_fill"],
                 "board_extra_perimeter": metrics["perimeter_extra"],
+                "board_staggered_score": metrics["staggered_score"],
                 "boundary_irregularities": metrics["boundary_irregularities"],
                 "boundary_half_cell_irregularities": metrics["boundary_half_cell_irregularities"],
                 "boundary_full_cell_irregularities": metrics["boundary_full_cell_irregularities"],
@@ -840,6 +851,7 @@ def write_near_miss_html(near_misses: list[NearMiss], path: Path) -> None:
                 <span>areas ordinary {escape(','.join(f'{len(piece) / 4.0:.1f}' for piece in candidate.pieces))}</span>
                 <span>boundary {metrics['boundary_irregularities']:.0f}</span>
                 <span>boundary half {metrics['boundary_half_cell_irregularities']:.0f}</span>
+                <span>staggered {metrics['staggered_score']:.1f}</span>
                 <span>fill {metrics['small_fill']:.2f}</span>
                 <span>perimeter+ {metrics['perimeter_extra']:.0f}</span>
               </div>
@@ -990,6 +1002,8 @@ def add_random_fallback_results(
             continue
         if board_metrics["boundary_half_cell_irregularities"] < args.min_boundary_half_notches:
             continue
+        if board_metrics["boundary_full_cell_irregularities"] > args.max_boundary_full_cell_irregularities:
+            continue
         if analysis.horizontal_half_cell_count < args.min_horizontal_half_cells:
             continue
         if analysis.vertical_half_cell_count < args.min_vertical_half_cells:
@@ -1033,9 +1047,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--effort", choices=("relaxed", "fast", "balanced", "deep", "extreme"), default="relaxed")
     parser.add_argument("--board-roughness", choices=BOARD_ROUGHNESS_CHOICES, default="rough")
+    parser.add_argument("--board-style", choices=("rect_half", "staggered", "near_rect", "mixed"), default="rect_half")
     parser.add_argument("--min-boundary-irregularities", type=int, default=2)
     parser.add_argument("--min-boundary-half-notches", type=int, default=2)
     parser.add_argument("--max-boundary-half-notches", type=int, default=4)
+    parser.add_argument("--max-boundary-full-cell-irregularities", type=int, default=0)
     parser.add_argument("--max-board-variants-per-macro", type=int, default=8)
     parser.add_argument("--min-horizontal-half-cells", type=int, default=1)
     parser.add_argument("--min-vertical-half-cells", type=int, default=1)
