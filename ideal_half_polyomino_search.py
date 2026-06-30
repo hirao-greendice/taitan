@@ -901,17 +901,29 @@ def _build_cpsat_model(
                 == y[shape.id]
             )
 
+    shape_by_id = {shape.id: shape for shape in shapes}
+    placements_by_identity: defaultdict[
+        tuple[tuple[Cell, ...], tuple[Cell, ...]],
+        list[PlacementRecord],
+    ] = defaultdict(list)
+    for placement in placements:
+        shape_signature = shape_by_id[placement.shape_id].rotational_signature
+        placement_signature = tuple(sorted(placement.cells))
+        placements_by_identity[(shape_signature, placement_signature)].append(placement)
+
     # Make every requested solution genuinely different from every other one.
+    # Difference is measured after collapsing pure swaps of identical physical
+    # pieces, matching base.solution_identity_signature() in final verification.
     for a in range(k_solutions):
         for b in range(a + 1, k_solutions):
-            same_vars = []
-            for placement in placements:
-                z = model.NewBoolVar(f"same_{a}_{b}_{placement.id}")
-                model.Add(z <= x[(a, placement.id)])
-                model.Add(z <= x[(b, placement.id)])
-                model.Add(z >= x[(a, placement.id)] + x[(b, placement.id)] - 1)
-                same_vars.append(z)
-            model.Add(sum(same_vars) <= args.pieces - 1)
+            different_identity_vars = []
+            for identity_index, identity_placements in enumerate(placements_by_identity.values()):
+                used_in_a = sum(x[(a, placement.id)] for placement in identity_placements)
+                used_in_b = sum(x[(b, placement.id)] for placement in identity_placements)
+                is_different = model.NewBoolVar(f"identity_diff_{a}_{b}_{identity_index}")
+                model.Add(used_in_a != used_in_b).OnlyEnforceIf(is_different)
+                different_identity_vars.append(is_different)
+            model.Add(sum(different_identity_vars) >= 1)
 
     # Prefer more half-cell structure and cleaner pieces.
     model.Maximize(

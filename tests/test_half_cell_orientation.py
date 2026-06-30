@@ -202,6 +202,42 @@ def test_generate_boundary_small_boards_prefers_half_notches():
         assert metrics["boundary_half_cell_irregularities"] >= 2
 
 
+def test_cpsat_rejects_pure_identical_piece_swap_proofs():
+    if ideal.cp_model is None:
+        return
+
+    board = base.macro_to_full_small({(0, 0), (1, 0)})
+    piece = base.macro_to_full_small({(0, 0)})
+    signature = ideal.rotational_signature(piece)
+    shapes = [
+        ideal.ShapeRecord(
+            id=index,
+            cells=frozenset(piece),
+            area=len(piece),
+            half_count=0,
+            horizontal_half_count=0,
+            vertical_half_count=0,
+            fragile_count=0,
+            rotational_signature=signature,
+        )
+        for index in range(2)
+    ]
+    placements = ideal.enumerate_shape_placements(board, shapes)
+    args = SimpleNamespace(
+        required_solutions=2,
+        pieces=2,
+        min_horizontal_half_cells=0,
+        min_vertical_half_cells=0,
+        allow_identical_pieces=True,
+        solve_time_limit=5.0,
+        workers=1,
+        seed=1,
+        solver_log=False,
+    )
+
+    assert ideal.solve_with_cpsat_candidates(board, shapes, placements, args) == []
+
+
 def test_ranked_piece_area_defaults_are_three_to_five_ordinary_cells():
     args = ranked_ideal_search.parse_args([])
     assert args.min_piece_area == 12
