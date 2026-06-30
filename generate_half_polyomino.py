@@ -254,6 +254,43 @@ def count_vertical_half_cells(cells: set[Cell] | frozenset[Cell]) -> int:
     return sum(1 for mask in cells_to_masks(cells).values() if is_vertical_half_mask(mask))
 
 
+def board_boundary_metrics(cells: set[Cell] | frozenset[Cell]) -> dict[str, float]:
+    """Measure exterior board irregularities on the ordinary-cell grid."""
+    masks = cells_to_masks(cells)
+    if not masks:
+        return {
+            "board_area_small": 0,
+            "board_area_ordinary_equiv": 0.0,
+            "occupied_macro_cells": 0,
+            "boundary_irregularities": 0,
+            "boundary_half_cell_irregularities": 0,
+            "boundary_full_cell_irregularities": 0,
+        }
+
+    macro_cells = set(masks)
+    min_x = min(x for x, _ in macro_cells)
+    max_x = max(x for x, _ in macro_cells)
+    min_y = min(y for _, y in macro_cells)
+    max_y = max(y for _, y in macro_cells)
+    half_irregularities = sum(1 for mask in masks.values() if mask in HALF_MASKS)
+    missing_adjacent = {
+        (x, y)
+        for y in range(min_y, max_y + 1)
+        for x in range(min_x, max_x + 1)
+        if (x, y) not in macro_cells
+        and any(neighbor in macro_cells for neighbor in neighbors4((x, y)))
+    }
+    full_irregularities = len(missing_adjacent)
+    return {
+        "board_area_small": len(cells),
+        "board_area_ordinary_equiv": len(cells) / 4.0,
+        "occupied_macro_cells": len(macro_cells),
+        "boundary_irregularities": half_irregularities + full_irregularities,
+        "boundary_half_cell_irregularities": half_irregularities,
+        "boundary_full_cell_irregularities": full_irregularities,
+    }
+
+
 def count_half_cell_orientations(pieces: list[set[Cell]] | list[frozenset[Cell]]) -> dict[str, object]:
     """Return horizontal/vertical half-cell counts across all pieces."""
     horizontal_per_piece = [count_horizontal_half_cells(piece) for piece in pieces]
@@ -1071,12 +1108,8 @@ def score_candidate(
         score -= 500.0
     if vertical_half_cell_count == 0:
         score -= 500.0
-    score += horizontal_half_cell_contacts * 40.0
-    score += vertical_half_cell_contacts * 40.0
-    if horizontal_half_cell_contacts == 0:
-        score -= 250.0
-    if vertical_half_cell_contacts == 0:
-        score -= 250.0
+    score += horizontal_half_cell_contacts * 12.0
+    score += vertical_half_cell_contacts * 12.0
     score += max(0, len(pieces) - fixed_pieces) * 8.0
 
     macro_board = {(x // SCALE, y // SCALE) for x, y in board}
@@ -1645,10 +1678,15 @@ def analysis_to_json(analysis: Analysis) -> dict[str, object]:
 def candidate_to_json(candidate: Candidate) -> dict[str, object]:
     piece_areas_small = [len(piece) for piece in candidate.pieces]
     piece_areas_ordinary_equiv = [area / 4.0 for area in piece_areas_small]
+    boundary_metrics = board_boundary_metrics(candidate.board)
     return {
         "scale": SCALE,
         "piece_count": len(candidate.pieces),
         "board": sorted([list(cell) for cell in candidate.board]),
+        "board_boundary_metrics": boundary_metrics,
+        "boundary_irregularities": boundary_metrics["boundary_irregularities"],
+        "boundary_half_cell_irregularities": boundary_metrics["boundary_half_cell_irregularities"],
+        "boundary_full_cell_irregularities": boundary_metrics["boundary_full_cell_irregularities"],
         "pieces": [
             {
                 "id": LETTERS[i],
@@ -2303,9 +2341,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=Path("out"))
     parser.add_argument("--allow-holes", action="store_true")
     parser.add_argument("--allow-identical-pieces", action="store_true")
-    parser.add_argument("--min-half-cells", type=int, default=3)
-    parser.add_argument("--min-horizontal-half-cells", type=int, default=0)
-    parser.add_argument("--min-vertical-half-cells", type=int, default=0)
+    parser.add_argument("--min-half-cells", type=int, default=0)
+    parser.add_argument("--min-horizontal-half-cells", type=int, default=1)
+    parser.add_argument("--min-vertical-half-cells", type=int, default=1)
     parser.add_argument("--min-horizontal-half-contacts", type=int, default=0)
     parser.add_argument("--min-vertical-half-contacts", type=int, default=0)
     parser.add_argument("--solution-count-limit", type=int, default=SOLUTION_COUNT_LIMIT)

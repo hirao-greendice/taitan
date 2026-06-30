@@ -115,6 +115,89 @@ def macro_to_small_board(cells: set[MacroCell]) -> set[Cell]:
     return base.macro_to_full_small(cells)
 
 
+def half_notch_options(cells: set[MacroCell]) -> list[tuple[MacroCell, int]]:
+    options: list[tuple[MacroCell, int]] = []
+    for x, y in sorted(cells):
+        checks = (
+            ((x - 1, y), base.MASK_RIGHT),
+            ((x + 1, y), base.MASK_LEFT),
+            ((x, y - 1), base.MASK_BOTTOM),
+            ((x, y + 1), base.MASK_TOP),
+        )
+        for neighbor, keep_mask in checks:
+            if neighbor not in cells:
+                options.append(((x, y), keep_mask))
+    return options
+
+
+def macro_to_small_board_with_half_notches(
+    cells: set[MacroCell],
+    notches: tuple[tuple[MacroCell, int], ...],
+) -> set[Cell]:
+    masks = {cell: base.MASK_FULL for cell in cells}
+    for cell, keep_mask in notches:
+        masks[cell] = keep_mask
+    return base.masks_to_cells(masks)
+
+
+def generate_boundary_small_boards(
+    args: argparse.Namespace,
+    macro_board: set[MacroCell],
+) -> list[set[Cell]]:
+    min_irregularities = int(getattr(args, "min_boundary_irregularities", 0))
+    min_half_notches = int(getattr(args, "min_boundary_half_notches", 0))
+    max_half_notches = int(getattr(args, "max_boundary_half_notches", max(2, min_half_notches)))
+    max_variants = int(getattr(args, "max_board_variants_per_macro", 1))
+    allow_holes = bool(getattr(args, "allow_holes", False))
+    candidates: list[set[Cell]] = []
+    seen: set[tuple[Cell, ...]] = set()
+
+    def maybe_add(board: set[Cell]) -> None:
+        if not board:
+            return
+        signature = tuple(sorted(board))
+        if signature in seen:
+            return
+        seen.add(signature)
+        if not base.is_connected(board):
+            return
+        if not base.is_legal_half_cell_shape(board):
+            return
+        if not allow_holes and base.has_small_hole(board):
+            return
+        metrics = base.board_boundary_metrics(board)
+        if metrics["boundary_irregularities"] < min_irregularities:
+            return
+        if metrics["boundary_half_cell_irregularities"] < min_half_notches:
+            return
+        if not (args.pieces * args.min_piece_area <= len(board) <= args.pieces * args.max_piece_area):
+            return
+        candidates.append(board)
+
+    maybe_add(macro_to_small_board(macro_board))
+    options = half_notch_options(macro_board)
+    for notch_count in range(max(0, min_half_notches), max_half_notches + 1):
+        if notch_count == 0:
+            continue
+        for combo_index, combo in enumerate(itertools.combinations(options, notch_count)):
+            if combo_index >= args.max_board_candidates_per_remove:
+                break
+            cells = [cell for cell, _ in combo]
+            if len(set(cells)) != len(cells):
+                continue
+            maybe_add(macro_to_small_board_with_half_notches(macro_board, combo))
+
+    candidates.sort(
+        key=lambda board: (
+            base.board_boundary_metrics(board)["boundary_half_cell_irregularities"],
+            base.board_boundary_metrics(board)["boundary_irregularities"],
+            -abs(len(board) - args.pieces * ((args.min_piece_area + args.max_piece_area) / 2)),
+        ),
+        reverse=True,
+    )
+    return candidates[:max_variants]
+
+
 def macro_perimeter(cells: set[MacroCell]) -> int:
     return sum(1 for cell in cells for neighbor in base.neighbors4(cell) if neighbor not in cells)
 
@@ -971,6 +1054,21 @@ def verify_and_write(
             file=sys.stderr,
         )
         return False
+    effective_solutions = []
+    seen_solution_signatures: set[object] = set()
+    for solution in solutions:
+        signature = base.solution_identity_signature(solution, pieces)
+        if signature in seen_solution_signatures:
+            continue
+        seen_solution_signatures.add(signature)
+        effective_solutions.append(solution)
+    if len(effective_solutions) < args.required_solutions:
+        print(
+            "CP-SAT candidate failed verification: "
+            f"only {len(effective_solutions)} effective solutions after identical-piece swaps",
+            file=sys.stderr,
+        )
+        return False
 
     rotated_count, _, _ = base.count_solutions(
         board,
@@ -982,8 +1080,8 @@ def verify_and_write(
     analysis = base.analyze_candidate(
         board,
         pieces,
-        solutions,
-        solution_count,
+        effective_solutions,
+        len(effective_solutions),
         rotated_count,
         placements_by_piece,
         args.required_solutions,
@@ -992,8 +1090,8 @@ def verify_and_write(
     candidate = base.Candidate(
         board=board,
         pieces=pieces,
-        solutions=solutions,
-        solution_count=solution_count,
+        solutions=effective_solutions,
+        solution_count=len(effective_solutions),
         placements_by_piece=placements_by_piece,
         score=analysis.difficulty_score,
         analysis=analysis,
@@ -1038,12 +1136,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--board-remove-max", type=int, default=0)
     parser.add_argument("--max-board-candidates", type=int, default=20)
     parser.add_argument("--max-board-candidates-per-remove", type=int, default=5000)
+    parser.add_argument("--min-boundary-irregularities", type=int, default=2)
+    parser.add_argument("--min-boundary-half-notches", type=int, default=2)
+    parser.add_argument("--max-boundary-half-notches", type=int, default=4)
+    parser.add_argument("--max-board-variants-per-macro", type=int, default=8)
     parser.add_argument("--allow-holes", action="store_true")
     parser.add_argument("--min-piece-area", type=int, default=12)
     parser.add_argument("--max-piece-area", type=int, default=20)
-    parser.add_argument("--min-half-cells", type=int, default=3)
-    parser.add_argument("--min-horizontal-half-cells", type=int, default=2)
-    parser.add_argument("--min-vertical-half-cells", type=int, default=2)
+    parser.add_argument("--min-half-cells", type=int, default=0)
+    parser.add_argument("--min-horizontal-half-cells", type=int, default=1)
+    parser.add_argument("--min-vertical-half-cells", type=int, default=1)
     parser.add_argument("--max-fragile", type=int, default=0)
     parser.add_argument("--required-solutions", type=int, default=4)
     parser.add_argument("--max-solutions", type=int, default=16)
@@ -1072,6 +1174,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("board remove counts must be non-negative")
     if args.board_remove_min > args.board_remove_max:
         raise SystemExit("--board-remove-min cannot exceed --board-remove-max")
+    if args.min_boundary_irregularities < 0 or args.min_boundary_half_notches < 0:
+        raise SystemExit("boundary irregularity minimums must be non-negative")
+    if args.max_boundary_half_notches < args.min_boundary_half_notches:
+        raise SystemExit("--max-boundary-half-notches cannot be smaller than --min-boundary-half-notches")
+    if args.max_board_variants_per_macro <= 0:
+        raise SystemExit("--max-board-variants-per-macro must be positive")
     min_board_area = (args.board_w_macro * args.board_h_macro - args.board_remove_max) * 4
     max_board_area = (args.board_w_macro * args.board_h_macro - args.board_remove_min) * 4
     if max_board_area < args.pieces * args.min_piece_area:
@@ -1105,14 +1213,13 @@ def main(argv: list[str] | None = None) -> int:
         print("No board candidates match the area and shape constraints.", file=sys.stderr)
         return 1
 
-    for board_index, macro_board in enumerate(macro_boards, start=1):
-        board = macro_to_small_board(macro_board)
-        board_dir = args.output_dir / f"board_{board_index:03d}"
-        library_json = board_dir / "library.json"
-        board_dir.mkdir(parents=True, exist_ok=True)
+    for macro_index, macro_board in enumerate(macro_boards, start=1):
+        small_boards = generate_boundary_small_boards(args, macro_board)
+        if not small_boards:
+            continue
         print(
-            f"[board {board_index}/{len(macro_boards)}] "
-            f"macro_area={len(macro_board)} small_area={len(board)} "
+            f"[macro board {macro_index}/{len(macro_boards)}] "
+            f"macro_area={len(macro_board)} variants={len(small_boards)} "
             f"score={board_score(macro_board, args.board_w_macro, args.board_h_macro):.1f}",
             file=sys.stderr,
             flush=True,
@@ -1125,24 +1232,37 @@ def main(argv: list[str] | None = None) -> int:
             print("Not enough shapes for this board.", file=sys.stderr)
             continue
 
-        print("Enumerating placements...", file=sys.stderr, flush=True)
-        placements = enumerate_shape_placements(board, shapes)
-        print(f"Enumerated {len(placements)} placements.", file=sys.stderr, flush=True)
-        write_library_snapshot(shapes, placements, library_json)
+        for variant_index, board in enumerate(small_boards, start=1):
+            board_dir = args.output_dir / f"board_{macro_index:03d}_{variant_index:02d}"
+            library_json = board_dir / "library.json"
+            board_dir.mkdir(parents=True, exist_ok=True)
+            metrics = base.board_boundary_metrics(board)
+            print(
+                f"[board {macro_index}.{variant_index}] "
+                f"small_area={len(board)} boundary={metrics['boundary_irregularities']} "
+                f"half={metrics['boundary_half_cell_irregularities']}",
+                file=sys.stderr,
+                flush=True,
+            )
 
-        print("Solving CP-SAT exact-cover selection...", file=sys.stderr, flush=True)
-        selected = solve_with_cpsat(board, shapes, placements, args)
-        if selected is None:
-            print("No ideal candidate found for this board.", file=sys.stderr)
-            continue
+            print("Enumerating placements...", file=sys.stderr, flush=True)
+            placements = enumerate_shape_placements(board, shapes)
+            print(f"Enumerated {len(placements)} placements.", file=sys.stderr, flush=True)
+            write_library_snapshot(shapes, placements, library_json)
 
-        old_output_dir = args.output_dir
-        args.output_dir = board_dir
-        ok = verify_and_write(board, selected, args)
-        args.output_dir = old_output_dir
-        if ok:
-            print(f"Found candidate in {board_dir}", file=sys.stderr)
-            return 0
+            print("Solving CP-SAT exact-cover selection...", file=sys.stderr, flush=True)
+            selected = solve_with_cpsat(board, shapes, placements, args)
+            if selected is None:
+                print("No ideal candidate found for this board.", file=sys.stderr)
+                continue
+
+            old_output_dir = args.output_dir
+            args.output_dir = board_dir
+            ok = verify_and_write(board, selected, args)
+            args.output_dir = old_output_dir
+            if ok:
+                print(f"Found candidate in {board_dir}", file=sys.stderr)
+                return 0
 
     print("No ideal candidate found under the current constraints.", file=sys.stderr)
     return 1

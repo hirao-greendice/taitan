@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import generate_half_polyomino as base
+import ideal_half_polyomino_search as ideal
 import ranked_ideal_search
 
 
@@ -148,7 +149,66 @@ def test_json_includes_half_cell_orientation_metrics():
     assert payload["vertical_half_cell_contacts"] >= 1
 
 
+def test_board_boundary_metrics_count_half_and_full_irregularities():
+    full_board = base.masks_to_cells(
+        {
+            (0, 0): base.MASK_FULL,
+            (1, 0): base.MASK_FULL,
+            (0, 1): base.MASK_FULL,
+            (1, 1): base.MASK_FULL,
+        }
+    )
+    assert base.board_boundary_metrics(full_board)["boundary_irregularities"] == 0
+
+    half_notched = base.masks_to_cells(
+        {
+            (0, 0): base.MASK_RIGHT,
+            (1, 0): base.MASK_FULL,
+            (0, 1): base.MASK_FULL,
+            (1, 1): base.MASK_TOP,
+        }
+    )
+    half_metrics = base.board_boundary_metrics(half_notched)
+    assert half_metrics["boundary_irregularities"] == 2
+    assert half_metrics["boundary_half_cell_irregularities"] == 2
+    assert half_metrics["boundary_full_cell_irregularities"] == 0
+
+    full_cell_notched = base.macro_to_full_small({(0, 0), (1, 0), (0, 1)})
+    full_metrics = base.board_boundary_metrics(full_cell_notched)
+    assert full_metrics["boundary_irregularities"] == 1
+    assert full_metrics["boundary_full_cell_irregularities"] == 1
+
+
+def test_generate_boundary_small_boards_prefers_half_notches():
+    args = SimpleNamespace(
+        min_boundary_irregularities=2,
+        min_boundary_half_notches=2,
+        max_boundary_half_notches=2,
+        max_board_variants_per_macro=3,
+        max_board_candidates_per_remove=100,
+        allow_holes=False,
+        pieces=1,
+        min_piece_area=12,
+        max_piece_area=20,
+    )
+    boards = ideal.generate_boundary_small_boards(
+        args,
+        {(0, 0), (1, 0), (0, 1), (1, 1)},
+    )
+    assert boards
+    for board in boards:
+        metrics = base.board_boundary_metrics(board)
+        assert metrics["boundary_irregularities"] >= 2
+        assert metrics["boundary_half_cell_irregularities"] >= 2
+
+
 def test_ranked_piece_area_defaults_are_three_to_five_ordinary_cells():
     args = ranked_ideal_search.parse_args([])
     assert args.min_piece_area == 12
     assert args.max_piece_area == 20
+    assert args.min_boundary_irregularities == 2
+    assert args.min_boundary_half_notches == 2
+    assert args.min_horizontal_half_cells == 1
+    assert args.min_vertical_half_cells == 1
+    assert args.min_horizontal_half_contacts == 0
+    assert args.min_vertical_half_contacts == 0

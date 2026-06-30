@@ -61,18 +61,22 @@ def small_board_metrics(board: set[tuple[int, int]]) -> dict[str, float]:
     bbox_w = max_x - min_x + 1
     bbox_h = max_y - min_y + 1
     fill = len(macro) / (bbox_w * bbox_h)
+    small_fill = len(board) / (bbox_w * bbox_h * base.SCALE * base.SCALE)
     perimeter = ideal.macro_perimeter(macro)
     ideal_perimeter = 2 * (bbox_w + bbox_h)
     aspect = max(bbox_w, bbox_h) / max(1, min(bbox_w, bbox_h))
     narrow_corridor = ideal.narrow_corridor_penalty(macro)
+    boundary_metrics = base.board_boundary_metrics(board)
     return {
         "macro_area": len(macro),
         "bbox_w": bbox_w,
         "bbox_h": bbox_h,
         "fill": fill,
+        "small_fill": small_fill,
         "perimeter_extra": max(0, perimeter - ideal_perimeter),
         "aspect": aspect,
         "narrow_corridor": narrow_corridor,
+        **boundary_metrics,
     }
 
 
@@ -133,8 +137,12 @@ def rank_candidate(
         board_roughness,
         BOARD_RANK_WEIGHTS["balanced"],
     )
-    score += metrics["fill"] * fill_weight
-    score -= metrics["perimeter_extra"] * perimeter_weight
+    score += metrics["small_fill"] * fill_weight * 0.35
+    score -= metrics["perimeter_extra"] * perimeter_weight * 0.35
+    score += metrics["boundary_half_cell_irregularities"] * 170
+    score += metrics["boundary_full_cell_irregularities"] * 45
+    if metrics["boundary_irregularities"] < 2:
+        score -= 850
     score -= max(0.0, metrics["aspect"] - aspect_limit) * aspect_weight
     score -= metrics["narrow_corridor"] * corridor_weight
     score -= abs(metrics["macro_area"] - 24) * 8
@@ -148,12 +156,8 @@ def rank_candidate(
         score -= 500
     if analysis.vertical_half_cell_count == 0:
         score -= 500
-    score += analysis.horizontal_half_cell_contacts * 40
-    score += analysis.vertical_half_cell_contacts * 40
-    if analysis.horizontal_half_cell_contacts == 0:
-        score -= 250
-    if analysis.vertical_half_cell_contacts == 0:
-        score -= 250
+    score += analysis.horizontal_half_cell_contacts * 12
+    score += analysis.vertical_half_cell_contacts * 12
 
     average_area = sum(areas) / max(1, len(areas))
     score -= sum(abs(area - average_area) for area in areas) * 0.75
@@ -181,7 +185,9 @@ def rank_candidate(
         remove_count = int(note_w * note_h - metrics["macro_area"])
     notes.append(
         f"board {note_w}x{note_h} remove={remove_count} roughness={board_roughness} "
-        f"perimeter_extra={int(metrics['perimeter_extra'])} fill={metrics['fill']:.2f} "
+        f"boundary={int(metrics['boundary_irregularities'])} "
+        f"half_boundary={int(metrics['boundary_half_cell_irregularities'])} "
+        f"perimeter_extra={int(metrics['perimeter_extra'])} fill={metrics['small_fill']:.2f} "
         f"narrow_corridor={int(metrics['narrow_corridor'])}"
     )
     notes.append(
@@ -242,6 +248,11 @@ def make_candidate(
     if analysis.duplicate_piece_count != 0 and not args.allow_identical_pieces:
         return None
     if any(len(piece) < args.min_piece_area or len(piece) > args.max_piece_area for piece in pieces):
+        return None
+    board_metrics = base.board_boundary_metrics(board)
+    if board_metrics["boundary_irregularities"] < getattr(args, "min_boundary_irregularities", 0):
+        return None
+    if board_metrics["boundary_half_cell_irregularities"] < getattr(args, "min_boundary_half_notches", 0):
         return None
     if analysis.horizontal_half_cell_count < getattr(args, "min_horizontal_half_cells", 0):
         return None
@@ -352,7 +363,8 @@ def search_profile(
     if args.verbose:
         print(f"[{profile_name}] boards={len(macro_boards)}", file=sys.stderr, flush=True)
 
-    for board_index, macro_board in enumerate(macro_boards, start=1):
+    flat_board_index = 0
+    for macro_index, macro_board in enumerate(macro_boards, start=1):
         if time.monotonic() - started_at > base_args.total_time_limit:
             return
         if len(results) >= base_args.keep_candidates and not base_args.keep_searching:
@@ -362,11 +374,14 @@ def search_profile(
         if board_args is None:
             return
 
-        board = ideal.macro_to_small_board(macro_board)
+        small_boards = ideal.generate_boundary_small_boards(board_args, macro_board)
+        if not small_boards:
+            continue
         if args.verbose:
             print(
-                f"[{profile_name}] board {board_index}/{len(macro_boards)} "
+                f"[{profile_name}] macro board {macro_index}/{len(macro_boards)} "
                 f"macro_area={len(macro_board)} "
+                f"variants={len(small_boards)} "
                 f"lib={board_args.library_time_limit:.0f}s solve={board_args.solve_time_limit:.0f}s",
                 file=sys.stderr,
                 flush=True,
@@ -378,80 +393,99 @@ def search_profile(
         if len(shapes) < board_args.pieces:
             continue
 
-        placements = ideal.enumerate_shape_placements(board, shapes)
-        if args.verbose:
-            print(f"[{profile_name}] enumerated placements={len(placements)}", file=sys.stderr, flush=True)
-        if not placements:
-            continue
-
-        before_shapes = len(shapes)
-        before_placements = len(placements)
-        shapes, placements = trim_solver_input(shapes, placements, board_args)
-        if len(shapes) < board_args.pieces or not placements:
-            continue
-
-        if args.verbose:
-            print(
-                f"[{profile_name}] solver input shapes={len(shapes)}/{before_shapes} "
-                f"placements={len(placements)}/{before_placements}",
-                file=sys.stderr,
-                flush=True,
-            )
-
-        selected_sets = ideal.solve_with_cpsat_candidates(
-            board,
-            shapes,
-            placements,
-            board_args,
-            max_candidates=board_args.solver_candidates_per_board,
-        )
-        if not selected_sets and board_args.single_cover_fallback:
-            one_cover_args = copy.copy(board_args)
-            one_cover_args.required_solutions = 1
-            one_cover_args.solve_time_limit = min(
-                board_args.solve_time_limit,
-                board_args.single_cover_solve_time_limit,
-            )
-            selected_sets = ideal.solve_with_cpsat_candidates(
-                board,
-                shapes,
-                placements,
-                one_cover_args,
-                max_candidates=board_args.solver_candidates_per_board,
-            )
-        if args.verbose:
-            print(f"[{profile_name}] solver returned {len(selected_sets)} set(s)", file=sys.stderr, flush=True)
-        for selected in selected_sets:
-            selected_shapes = list(selected.shapes) if hasattr(selected, "shapes") else selected
-            candidate = make_candidate(board, selected_shapes, board_args)
-            if candidate is None:
-                continue
-
-            rank_score, notes = rank_candidate(
-                candidate,
-                profile_name,
-                getattr(board_args, "board_roughness", "balanced"),
-                (int(board_args.board_w_macro), int(board_args.board_h_macro)),
-            )
-            results.append(
-                RankedResult(
-                    candidate=candidate,
-                    board_index=board_index,
-                    profile_name=profile_name,
-                    rank_score=rank_score,
-                    notes=notes,
-                )
-            )
-            results.sort(key=lambda result: result.rank_score, reverse=True)
+        for variant_index, board in enumerate(small_boards, start=1):
+            if time.monotonic() - started_at > base_args.total_time_limit:
+                return
+            if len(results) >= base_args.keep_candidates and not base_args.keep_searching:
+                return
+            flat_board_index += 1
+            variant_args = copy.copy(board_args)
+            variant_args.board_index = flat_board_index
+            variant_args.board_variant_index = variant_index
+            metrics = base.board_boundary_metrics(board)
             if args.verbose:
                 print(
-                    f"accepted score={rank_score:.1f} "
-                    f"solutions={candidate.solution_count} notes={' / '.join(notes)}",
+                    f"[{profile_name}] board {macro_index}.{variant_index} "
+                    f"area={len(board)} boundary={int(metrics['boundary_irregularities'])} "
+                    f"half={int(metrics['boundary_half_cell_irregularities'])}",
                     file=sys.stderr,
                     flush=True,
                 )
-            if len(results) >= base_args.keep_candidates and not base_args.keep_searching:
-                return
+
+            placements = ideal.enumerate_shape_placements(board, shapes)
+            if args.verbose:
+                print(f"[{profile_name}] enumerated placements={len(placements)}", file=sys.stderr, flush=True)
+            if not placements:
+                continue
+
+            before_shapes = len(shapes)
+            before_placements = len(placements)
+            trimmed_shapes, trimmed_placements = trim_solver_input(shapes, placements, variant_args)
+            if len(trimmed_shapes) < variant_args.pieces or not trimmed_placements:
+                continue
+
+            if args.verbose:
+                print(
+                    f"[{profile_name}] solver input shapes={len(trimmed_shapes)}/{before_shapes} "
+                    f"placements={len(trimmed_placements)}/{before_placements}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            selected_sets = ideal.solve_with_cpsat_candidates(
+                board,
+                trimmed_shapes,
+                trimmed_placements,
+                variant_args,
+                max_candidates=variant_args.solver_candidates_per_board,
+            )
+            if not selected_sets and variant_args.single_cover_fallback:
+                one_cover_args = copy.copy(variant_args)
+                one_cover_args.required_solutions = 1
+                one_cover_args.solve_time_limit = min(
+                    variant_args.solve_time_limit,
+                    variant_args.single_cover_solve_time_limit,
+                )
+                selected_sets = ideal.solve_with_cpsat_candidates(
+                    board,
+                    trimmed_shapes,
+                    trimmed_placements,
+                    one_cover_args,
+                    max_candidates=variant_args.solver_candidates_per_board,
+                )
+            if args.verbose:
+                print(f"[{profile_name}] solver returned {len(selected_sets)} set(s)", file=sys.stderr, flush=True)
+            for selected in selected_sets:
+                selected_shapes = list(selected.shapes) if hasattr(selected, "shapes") else selected
+                candidate = make_candidate(board, selected_shapes, variant_args)
+                if candidate is None:
+                    continue
+
+                rank_score, notes = rank_candidate(
+                    candidate,
+                    profile_name,
+                    getattr(variant_args, "board_roughness", "balanced"),
+                    (int(variant_args.board_w_macro), int(variant_args.board_h_macro)),
+                )
+                results.append(
+                    RankedResult(
+                        candidate=candidate,
+                        board_index=flat_board_index,
+                        profile_name=profile_name,
+                        rank_score=rank_score,
+                        notes=notes,
+                    )
+                )
+                results.sort(key=lambda result: result.rank_score, reverse=True)
+                if args.verbose:
+                    print(
+                        f"accepted score={rank_score:.1f} "
+                        f"solutions={candidate.solution_count} notes={' / '.join(notes)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                if len(results) >= base_args.keep_candidates and not base_args.keep_searching:
+                    return
 
 
 def effort_caps(effort: str) -> list[int]:
@@ -498,33 +532,33 @@ def build_profiles(args: argparse.Namespace) -> list[dict[str, object]]:
         # - paper fragility remains hard max_fragile=0 below
         # - board neatness is handled by rank_candidate(), not by rejecting early
         neat_specs = [
-            ("6x4_full_half1_sol2", 6, 4, 0, 0, caps[0], 1, 2, args.shape_copies, neat_profile_roughness(args)),
-            ("5x5_full_half1_sol2", 5, 5, 0, 0, caps[1], 1, 2, args.shape_copies, neat_profile_roughness(args)),
-            ("5x5_remove0-2_half1_sol2", 5, 5, 0, 2, caps[2], 1, 2, args.shape_copies, neat_profile_roughness(args)),
-            ("5x5_remove0-3_half1_sol2", 5, 5, 0, 3, caps[3], 1, 2, args.shape_copies, neat_profile_roughness(args)),
-            ("6x5_remove5-6_half1_sol2", 6, 5, 5, 6, caps[4], 1, 2, args.shape_copies, neat_profile_roughness(args)),
-            ("6x4_full_half2_sol2", 6, 4, 0, 0, caps[5], 2, 2, args.shape_copies, neat_profile_roughness(args)),
-            ("5x5_remove0-3_half2_sol2", 5, 5, 0, 3, caps[6], 2, 2, args.shape_copies, neat_profile_roughness(args)),
-            ("6x5_remove5-6_half2_sol2", 6, 5, 5, 6, caps[7], 2, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("6x4_full_half0_sol2", 6, 4, 0, 0, caps[0], 0, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("5x5_full_half0_sol2", 5, 5, 0, 0, caps[1], 0, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("5x5_remove0-2_half0_sol2", 5, 5, 0, 2, caps[2], 0, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half0_sol2", 5, 5, 0, 3, caps[3], 0, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("6x5_remove5-6_half0_sol2", 6, 5, 5, 6, caps[4], 0, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("6x4_full_half1_sol2", 6, 4, 0, 0, caps[5], 1, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half1_sol2", 5, 5, 0, 3, caps[6], 1, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("6x5_remove5-6_half1_sol2", 6, 5, 5, 6, caps[7], 1, 2, args.shape_copies, neat_profile_roughness(args)),
         ]
     else:
         neat_specs = [
-            ("5x5_full_half3_sol4", 5, 5, 0, 0, caps[0], 3, 4, 1, neat_profile_roughness(args)),
-            ("5x5_remove0-2_half3_sol4", 5, 5, 0, 2, caps[1], 3, 4, 1, neat_profile_roughness(args)),
-            ("5x5_remove0-3_half3_sol3", 5, 5, 0, 3, caps[2], 3, 3, 1, neat_profile_roughness(args)),
-            ("5x5_remove0-3_half2_sol2", 5, 5, 0, 3, caps[3], 2, 2, args.shape_copies, neat_profile_roughness(args)),
-            ("6x4_full_half2_sol4", 6, 4, 0, 0, caps[4], 2, 4, 1, neat_profile_roughness(args)),
-            ("5x5_remove0-3_half2_sol4", 5, 5, 0, 3, caps[5], 2, 4, 1, neat_profile_roughness(args)),
-            ("6x5_remove5-6_half2_sol4", 6, 5, 5, 6, caps[6], 2, 4, 1, neat_profile_roughness(args)),
+            ("5x5_full_half1_sol4", 5, 5, 0, 0, caps[0], 1, 4, 1, neat_profile_roughness(args)),
+            ("5x5_remove0-2_half1_sol4", 5, 5, 0, 2, caps[1], 1, 4, 1, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half1_sol3", 5, 5, 0, 3, caps[2], 1, 3, 1, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half1_sol2", 5, 5, 0, 3, caps[3], 1, 2, args.shape_copies, neat_profile_roughness(args)),
+            ("6x4_full_half1_sol4", 6, 4, 0, 0, caps[4], 1, 4, 1, neat_profile_roughness(args)),
+            ("5x5_remove0-3_half1_sol4", 5, 5, 0, 3, caps[5], 1, 4, 1, neat_profile_roughness(args)),
+            ("6x5_remove5-6_half1_sol4", 6, 5, 5, 6, caps[6], 1, 4, 1, neat_profile_roughness(args)),
         ]
 
     rough_specs = [
-        ("5x6_remove5-8_half1_sol2", 5, 6, 5, 8, rough_caps[0], 1, 2, args.shape_copies, rough_profile_roughness(args)),
-        ("6x5_remove6-8_half1_sol2", 6, 5, 6, 8, rough_caps[1], 1, 2, args.shape_copies, rough_profile_roughness(args)),
-        ("7x4_remove4-6_half1_sol2", 7, 4, 4, 6, rough_caps[2], 1, 2, args.shape_copies, rough_profile_roughness(args)),
-        ("7x5_remove10-12_half1_sol2", 7, 5, 10, 12, rough_caps[3], 1, 2, args.shape_copies, rough_profile_roughness(args)),
-        ("6x6_remove10-12_half1_sol2", 6, 6, 10, 12, rough_caps[4], 1, 2, args.shape_copies, rough_profile_roughness(args)),
-        ("8x4_remove7-9_half1_sol2", 8, 4, 7, 9, rough_caps[5], 1, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("5x6_remove5-8_half0_sol2", 5, 6, 5, 8, rough_caps[0], 0, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("6x5_remove6-8_half0_sol2", 6, 5, 6, 8, rough_caps[1], 0, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("7x4_remove4-6_half0_sol2", 7, 4, 4, 6, rough_caps[2], 0, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("7x5_remove10-12_half0_sol2", 7, 5, 10, 12, rough_caps[3], 0, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("6x6_remove10-12_half0_sol2", 6, 6, 10, 12, rough_caps[4], 0, 2, args.shape_copies, rough_profile_roughness(args)),
+        ("8x4_remove7-9_half0_sol2", 8, 4, 7, 9, rough_caps[5], 0, 2, args.shape_copies, rough_profile_roughness(args)),
     ]
 
     if args.board_roughness == "neat":
@@ -591,7 +625,11 @@ def write_ranked_outputs(results: list[RankedResult], output_dir: Path, limit: i
                 "board_macro_area": metrics["macro_area"],
                 "board_bbox": [metrics["bbox_w"], metrics["bbox_h"]],
                 "board_fill": metrics["fill"],
+                "board_small_fill": metrics["small_fill"],
                 "board_extra_perimeter": metrics["perimeter_extra"],
+                "boundary_irregularities": metrics["boundary_irregularities"],
+                "boundary_half_cell_irregularities": metrics["boundary_half_cell_irregularities"],
+                "boundary_full_cell_irregularities": metrics["boundary_full_cell_irregularities"],
                 "piece_areas_small": [len(piece) for piece in result.candidate.pieces],
                 "piece_areas_ordinary_equiv": [len(piece) / 4.0 for piece in result.candidate.pieces],
                 "solution_count_effective_fixed": result.candidate.solution_count,
@@ -694,6 +732,11 @@ def add_random_fallback_results(
             continue
         if any(len(piece) < args.min_piece_area or len(piece) > args.max_piece_area for piece in candidate.pieces):
             continue
+        board_metrics = base.board_boundary_metrics(candidate.board)
+        if board_metrics["boundary_irregularities"] < args.min_boundary_irregularities:
+            continue
+        if board_metrics["boundary_half_cell_irregularities"] < args.min_boundary_half_notches:
+            continue
         if analysis.horizontal_half_cell_count < args.min_horizontal_half_cells:
             continue
         if analysis.vertical_half_cell_count < args.min_vertical_half_cells:
@@ -736,11 +779,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--effort", choices=("fast", "balanced", "relaxed", "deep", "extreme"), default="balanced")
-    parser.add_argument("--board-roughness", choices=BOARD_ROUGHNESS_CHOICES, default="balanced")
-    parser.add_argument("--min-horizontal-half-cells", type=int, default=2)
-    parser.add_argument("--min-vertical-half-cells", type=int, default=2)
-    parser.add_argument("--min-horizontal-half-contacts", type=int, default=1)
-    parser.add_argument("--min-vertical-half-contacts", type=int, default=1)
+    parser.add_argument("--board-roughness", choices=BOARD_ROUGHNESS_CHOICES, default="rough")
+    parser.add_argument("--min-boundary-irregularities", type=int, default=2)
+    parser.add_argument("--min-boundary-half-notches", type=int, default=2)
+    parser.add_argument("--max-boundary-half-notches", type=int, default=4)
+    parser.add_argument("--max-board-variants-per-macro", type=int, default=8)
+    parser.add_argument("--min-horizontal-half-cells", type=int, default=1)
+    parser.add_argument("--min-vertical-half-cells", type=int, default=1)
+    parser.add_argument("--min-horizontal-half-contacts", type=int, default=0)
+    parser.add_argument("--min-vertical-half-contacts", type=int, default=0)
     parser.add_argument("--output-dir", type=Path, default=Path("out_ranked"))
     parser.add_argument("--keep-candidates", type=int, default=12)
     parser.add_argument("--keep-searching", action="store_true")
@@ -755,7 +802,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-solver-placements", type=int, default=22_000)
     parser.add_argument("--max-board-candidates-per-remove", type=int, default=2000)
     parser.add_argument("--random-fallback-time-limit", type=float, default=600.0)
-    parser.add_argument("--fallback-min-half-cells", type=int, default=1)
+    parser.add_argument("--fallback-min-half-cells", type=int, default=0)
     parser.add_argument("--no-random-fallback", action="store_true")
     parser.add_argument("--allow-holes", action="store_true")
     parser.add_argument("--no-rotate", action="store_true")
